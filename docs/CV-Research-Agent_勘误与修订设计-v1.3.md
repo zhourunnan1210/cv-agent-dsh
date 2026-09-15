@@ -55,6 +55,7 @@
 | E18 | （工程细节，未涉及） | — | ① schemastery 默认值只在 Loader 按 Config schema 校验时注入；直接 `new` 构造时字段是 `undefined`，`JSON.stringify` 会**静默丢弃**（project_id 缺失被形状校验拦下）——构造器必须显式解析默认值；② loader 装载的行模块必须有 `default`（插件类）或命名 `apply` 导出，只有命名导出会被拒 | **L1**（隔离 profile 实机装载实测） | 见 §5.3.1 |
 | E19 | （工程细节，未涉及） | — | preset 组合里**不带 config 的行**，Loader 传入的 config 是 `undefined`，schemastery 的 `.default()` 在该路径**不生效**（mount-validate 报 `Cannot read properties of undefined (reading 'projectDir')`）——构造器必须 `config = {}` + `?.` 显式取默认值 | **L1**（mount-validate 实测） | 见 §5.3.2 |
 | E20 | §16.1 角色矩阵 / §4.1 | 隐含假设：主 Agent 的工具面可以由 preset 组合裁剪（排除 `read_*` 等重上下文工具） | **部分不成立**：dsh-ai4scholar 是 profile 的 bundle 层（宿主平面），其 38 个工具对**所有** preset 全局可见，preset 组合无法移除它们。且主 Agent 的 setup 窗口由 `dsh-api-session-controller.composeAgent()` 硬编码（`mount` + `installSelection`，无第三方钩子），目录级 `restrict()` 对主 Agent **没有受支持的扩展点**。**已用执行级护栏解决**（`tools/pre-execute` waterfall + `agents.roots()` 区分根/子代理），见 §5.3.2 第 5 条 | L2（controller 源码级）+ **L1**（护栏 6 条测试） | **已闭环**（执行级） |
+| E21 | （工程事实，未涉及） | — | **运行中的宿主进程缓存两样东西**：① 已加载的插件模块代码（Node module cache）；② 包根的 `package.json` exports 解析（新增子路径报 `Package subpath './x' is not defined by exports`，尽管磁盘上已有）。两者都不随文件 mtime 失效——**HMR 未启用时，插件的任何改动（含 exports 映射）都必须重启宿主**。三轮 mount-validate 反复命中同一条旧错误、磁盘修复全绿，实证了这一点 | **L1**（三轮实测） | 记录备案 |
 
 ---
 
