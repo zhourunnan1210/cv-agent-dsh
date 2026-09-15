@@ -221,6 +221,31 @@ capabilities = { agentOptions: true, outputSchema: ..., depthLimit: ..., toolFil
 
 **更重要的判断**：如果 `kb` 等服务的消费者在 agent 平面之外（例如浏览器 RPC 要读三库计数、宿主层要读项目状态），那么**它们属于宿主组合，不属于 preset**。Phase 1 必须先做这个判定——这决定了这些服务的落位，改起来代价很大。
 
+#### 4.4.1 归属判定分析（待你确认）
+
+判定依据是**同一时刻是否可能存在两个不同实例**。若两个会话可能同时处理不同项目，
+那么"每个项目一份"的服务就不能是进程单例。
+
+| 服务 | 数据归属 | 是否可能跨会话并存两份 | 建议归属 | 理由 |
+| --- | --- | --- | --- | --- |
+| `kb`（三库） | 每个**项目**一份 | **是**（两个会话跑两个课题） | **preset + isolate realm** | 项目私有数据；放宿主会让第二个项目读到第一个项目的三库 |
+| `projectState` | 每个**项目**一份 | **是** | **preset + isolate realm** | 同上；`project_state.json` 本就是项目级文件 |
+| `ideaScore`（打分） | 无状态算法 + 读 `kb` | 否（无自有状态） | **preset**（跟随 `kb` 的 realm） | 它的状态就是 `kb`；必须与 `kb` 同 realm，否则读不到 |
+| `expOrchestrator` | 编排状态按项目，但**资源**（GPU 实例、预算）是全局 | **部分** | **拆两层**：编排状态随 preset；**资源仲裁放宿主** | 若两份实例各自记账，预算上限（§20）会被绕过——两个项目各跑一个 72 小时的 GPU 任务 |
+
+**结论（建议）**：`kb` / `projectState` / `ideaScore` 三个走 preset + `isolate` realm；
+`expOrchestrator` **拆开**——项目内的实验编排状态随 preset，而"当前有几个 GPU 实例在跑、
+已消耗多少预算"这类**跨项目的资源账本必须放宿主组合**，否则 §4.2 的 C 模式预算护栏形同虚设。
+
+**一个必须避免的陷阱**：宿主平面的行**不能** `inject` 上述 preset 服务——注入在会话
+存在之前就解析，没有 agent 可以按 key 查。若宿主需要读某个 agent 的 preset 服务，
+dsh 提供的正解是 `agentPresets.serviceFor(agent, name)`（"A request that is ABOUT a
+session but arrives from outside it, which is every browser RPC"）。它是只读寻址面，
+不是注入面。
+
+> ⚠️ **这一节需要你确认或推翻。** 它决定 `cv-agent-dsh` 第一批 row 怎么写，
+> 而服务落位是返工代价最高的一处（见 §7 顺序 2）。
+
 ### 4.5 【E6 增强】用作用域 prompt 章节承载"领域上下文 / 行为边界 / 输出契约"
 
 v1.2 的 §16.2 五段式 prompt 骨架全部塞进 preset 的 persona。实际 `ctx.systemPrompt.section({ name, order, text })` 提供的是**作用域内有序章节**，且每次模型步前重新组装（L2）。因此：
@@ -492,6 +517,8 @@ v1.2 的 Phase 划分基本合理，但有三处需要调整：
 | 6 | bundle 装载链路实证 | — | ✅ 已完成（隔离 `DSH_HOME`，§5.4） | 我 |
 | 7 | E15 授权模型落地：`Authorization` / `NeedsAuthorization` 契约与判定 | — | ✅ 已完成（§4.6，9 条测试） | 我 |
 | 8 | §16.1 角色矩阵的可执行规格（逐角色断言工具面） | — | ✅ 已完成（5 个角色，真实 runtime 断言） | 我 |
+| 8b | S6 门控完整往返：`project_state.json` 持久化 + 快照回滚 | — | ✅ 已完成（10 条测试，真实磁盘） | 我 |
+| 8c | S2 上下文洁净：`spawn` vs `fork` 与结果压缩机制 | — | ✅ 已完成（源码级，§5.2.1） | 我 |
 | 9 | 冻结三库 schema（v1.2 §14 的待决策项，也是 Phase 2 的截止点） | 1 | **待你** | 你 |
 | 10 | 写 `cv-agent-dsh` 的第一批 row + `cvagent.*` 工具并链入 profile | 1、2 | 可开工（工具名契约与角色矩阵规格已就绪） | 我 |
 | 11 | S2 / S6 端到端实跑（真实子代理的 `toolFilter`、`outputSchema`、`ask_user_question` 呈递） | 10 | 待 10 | 我 |
