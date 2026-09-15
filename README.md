@@ -45,9 +45,15 @@ data/                         运行期数据（gitignore）
 ## 快速开始
 
 ```bash
-pnpm install          # 同时会触发 vendored dsh-ai4scholar 的 prepare 构建
-node tests/smoke-vendor-plugin.mjs   # 验证基座插件 38 个工具注册正常
+pnpm install                          # 构建 vendored dsh-ai4scholar + core + dsh-plugin
+node tests/smoke-vendor-plugin.mjs    # L1 实证：基座插件 38 个工具注册正常
+node tests/spike-s1-tool-isolation.mjs        # L1 实证：工具白名单隔离（12 条断言）
+node packages/dsh-plugin/tests/names.test.mjs # 工具名契约与真实运行时对齐
+pnpm typecheck                        # 全 workspace 类型检查
 ```
+
+> `lib/` 构建产物不入库，由 `pnpm install` 的 `prepare` 脚本现场生成；
+> 若 `node_modules` 已存在而 `lib/` 缺失，手动执行 `pnpm -r run build`。
 
 ## 已知工程约束
 
