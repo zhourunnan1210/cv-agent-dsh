@@ -49,6 +49,7 @@
 | E12 | 仓库根目录 | 仓库名 `cv-research-agent` | 实际工作区目录为 `D:\Code\VScodeRepo\dsh-plugin`（目录名早于项目命名）。已按用户决定：**目录名保留，仓库身份为 `cv-research-agent`** | L1 | 记录备案 |
 | E13 | §16.1 隔离红线的保障方式 | 靠 preset 定义正确来保证 Orchestrator 看不到重上下文工具 | 实际由 **runtime 双重兜底**：`restrict()` 无 scope 时直接抛错；过滤器含未知工具名时抛错并列出已知工具。红线不是"我们写对才有" | **L1** | 见 §5.1 |
 | E14 | （初稿遗漏）委派参数的下发时机 | — | `toolFilter` 必须使用**已注册的真实工具名**，否则 `restrict()` 在委派时抛错。Phase 1 的工具命名因此需要一份稳定的常量表，不能散落字符串字面量 | **L1** | 见 §4.1、§5.1 |
+| E15 | §7.2 / §4.2（未提及） | 隐含假设：实验子代理可在运行中请求授权（如启动云 GPU） | **不成立**。委派时子代理的审批策略被硬性钉为 `'never'`（`captureDelegatedPolicyOverrides`），与父策略无关。子代理只能做父已授权的事，**不能中途发起审批** | L2 | 见 §5.2 |
 
 ---
 
@@ -279,11 +280,50 @@ v1.2 的 §16.2 五段式 prompt 骨架全部塞进 preset 的 persona。实际 
    `inject: ['tools']` 的插件内部。这正是委派运行时的形态（它在子代理的创建窗口内
    注册结构化输出工具），Phase 1 若自建委派封装需遵循同样的形态。
 
-### 5.2 S2 —— 子代理上下文隔离
+### 5.2 S2 —— 子代理上下文隔离 → **机制已闭合（L2 源码级 + L1 原语级）**
 
 - **结论（L2）**：`spawn` provider 不继承父会话历史（区别于 `fork`）；父 Agent 只拿到 `SubagentResult{ output, structured, diagnostic, stopReason }`。这正是 §1.3 原则四要的语义。
-- **替代验收项**：派发一个长任务，验证 ① 子代理不携带父历史；② 父只收到 `structured`；③ `outputSchema` 违反时报错而非静默回传自由文本。**待宿主重启后实跑**。
-- **与 S1 的关系**：S2 依赖的正是 S1 已实证的 `restrict()` 机制——`toolFilter` 落在它上面。因此 S2 的剩余不确定性只在「端到端委派是否真的把 `toolFilter` 传下去」，而非「隔离本身是否有效」。
+- **机制闭合（关键）**：`toolFilter` 与已验证的 `restrict()` 之间的链路已定位到确切源码。
+  `@deepseek-ai/dsh-subagent` 的 `applyChildComposition()` 是委派的唯一装配点：
+
+  ```js
+  export function applyChildComposition(childCtx, parent, composition) {
+      childCtx.get('agentPresets')?.composeFrom(childCtx, parent.ctx);   // ① 继承父组合
+      childCtx.systemPrompt.context({ name: 'subagent:delegation', ... });
+      if (composition.persona !== undefined) {
+          childCtx.systemPrompt.section({ name: 'deployment:persona-prefix', ... });
+      }
+      if (composition.toolFilter !== undefined)
+          childCtx.tools.restrict(composition.toolFilter);               // ② 正是 S1 实证的原语
+  }
+  ```
+
+  三点同时被这一处源码坐实：
+
+  1. **① 行就是 E1 的根因**：子代理 `composeFrom(childCtx, parent.ctx)` 加入**父的**组合，
+     所以"用另一个 preset 隔离子代理角色"在实现上不存在路径。勘误 §4.1 的结论由此从
+     "文档注释这么说"升级为"唯一装配点这么写"。
+  2. **② 行把 `toolFilter` 直接交给 `restrict()`**，而 `restrict()` 的语义已被 S1
+     以 12 条断言 L1 实证。因此 S2 的剩余不确定性**不是**"隔离是否有效"，
+     而只是"端到端委派是否如实传参"——后者的传参路径就是上文四行代码。
+  3. `persona` 走 `systemPrompt.section()`，与 §4.5 的 scoped prompt 章节设计一致。
+
+- **顺带发现的一条安全属性（v1.2 两份文档均未提及）**：
+  `captureDelegatedPolicyOverrides()` 把子代理的审批策略**硬性钉为 `'never'`**，
+  与父代理自身的策略无关：
+
+  ```js
+  approvalPolicy: parent.ctx.get('approval') === undefined ? undefined : 'never',
+  ```
+
+  → **子代理不能发起审批请求**，它只能做父代理已被授权做的事。这对 §7 实验执行层是
+  重要约束：Train/Eval 子代理无法在运行中请求"启动云 GPU 实例"的许可，此类需要人类
+  授权的动作**必须由主 Agent 在委派之前完成**（或在父层排队），不能指望子代理中途问。
+  这也解释了为什么 §4.2 的 C 模式安全边界必须放在主 Agent 的门控上而不是子代理上。
+
+- **剩余验收项（端到端，待 `cv-agent-dsh` 委派工具落地）**：派发一个真实子代理，验证
+  ① 子代理不携带父历史；② 父只收到 `structured`；③ `outputSchema` 违反时报错而非
+  静默回传自由文本；④ 子代理确实看不到 `toolFilter` 排除的工具。
 
 ### 5.3 S6 —— gate / 审批机制承载 ABC 模式
 
@@ -356,14 +396,17 @@ v1.2 的 Phase 划分基本合理，但有三处需要调整：
 | 1 | 评审并冻结本文件的 §4.1 / §4.2 / §4.4 | — | **待你** | 你 |
 | 2 | 服务平面归属判定：`kb` / `ideaScore` / `expOrchestrator` / `projectState` 各自归宿主还是 preset | §4.4 | **待你** | 你 + 我 |
 | 3 | S1 工具白名单隔离实证 | — | ✅ 已完成（L1，12 条断言） | 我 |
-| 4 | S6 状态机与门控判定实现 | — | ✅ 已完成（`core/state/machine.ts`，8/8 测试） | 我 |
-| 5 | 冻结三库 schema（v1.2 §14 的待决策项，也是 Phase 2 的截止点） | 1 | **待你** | 你 |
-| 6 | 写 `cv-agent-dsh` 的第一批 row + `cvagent.*` 工具并链入 profile | 1、2 | 可开工（工具命名需先定常量表，见 E14） | 我 |
-| 7 | 重启 dsh 宿主 → 新会话验证 38 个 ai4scholar 工具 + `cvagent.*` 工具 | 6 | 待你重启 | 你重启，我验证 |
-| 8 | S2 / S6 端到端实跑（真实子代理的 `toolFilter`、`outputSchema`、`ask_user_question` 呈递） | 7 | 待 7 | 我 |
+| 4 | S2 委派机制闭合：`toolFilter` → `restrict()` 链路定位 | — | ✅ 已完成（源码级 + S1 原语实证） | 我 |
+| 5 | S6 状态机与门控判定实现 | — | ✅ 已完成（`core/state/machine.ts`，8/8 测试） | 我 |
+| 6 | bundle 装载链路实证 | — | ✅ 已完成（隔离 `DSH_HOME`，§5.4） | 我 |
+| 7 | 按 E15 修订 §7.2：需要人类授权的实验动作上移到主 Agent 门控 | — | 待纳入设计 | 我（可先做） |
+| 8 | 冻结三库 schema（v1.2 §14 的待决策项，也是 Phase 2 的截止点） | 1 | **待你** | 你 |
+| 9 | 写 `cv-agent-dsh` 的第一批 row + `cvagent.*` 工具并链入 profile | 1、2 | 可开工（工具名契约已就绪） | 我 |
+| 10 | S2 / S6 端到端实跑（真实子代理的 `toolFilter`、`outputSchema`、`ask_user_question` 呈递） | 9 | 待 9 | 我 |
 
-> 顺序 3、4 之所以能在你决策之前完成，是因为它们只依赖 dsh 运行时契约，不依赖服务平面归属。
-> 顺序 6 则**必须**等 1、2 定下来：服务放错位置的返工代价最大（勘误 §4.4）。
+> 顺序 3–6 之所以能在你决策之前完成，是因为它们只依赖 dsh 运行时契约，不依赖服务平面归属。
+> 顺序 9 则**必须**等 1、2 定下来：服务放错位置的返工代价最大（勘误 §4.4）。
+> 顺序 7 是 E15 的直接后续，纯设计工作，可与你的评审并行。
 
 ---
 
