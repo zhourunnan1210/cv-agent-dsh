@@ -50,6 +50,7 @@
 | E13 | §16.1 隔离红线的保障方式 | 靠 preset 定义正确来保证 Orchestrator 看不到重上下文工具 | 实际由 **runtime 双重兜底**：`restrict()` 无 scope 时直接抛错；过滤器含未知工具名时抛错并列出已知工具。红线不是"我们写对才有" | **L1** | 见 §5.1 |
 | E14 | （初稿遗漏）委派参数的下发时机 | — | `toolFilter` 必须使用**已注册的真实工具名**，否则 `restrict()` 在委派时抛错。Phase 1 的工具命名因此需要一份稳定的常量表，不能散落字符串字面量 | **L1** | 见 §4.1、§5.1 |
 | E15 | §7.2 / §4.2（未提及） | 隐含假设：实验子代理可在运行中请求授权（如启动云 GPU） | **不成立**。委派时子代理的审批策略被硬性钉为 `'never'`（`captureDelegatedPolicyOverrides`），与父策略无关。子代理只能做父已授权的事，**不能中途发起审批** | L2 | **改设计**，见 §4.6 |
+| E16 | （工程细节，两份文档均未涉及） | — | Cordis 插件装载有两个易错形态：① `dsh-system-prompt` 的 default 导出是**插件类**，必须直接传给 `ctx.plugin()`；拆成 `{ name, apply }` 普通对象会被拒绝（`invalid plugin ... received object`）；② 嵌套插件必须在父插件的 `apply` 内 **await**，否则子插件尚未激活就返回，外部读到的是 `undefined` | **L1**（两次失败实测） | 见 §5.3.1 |
 
 ---
 
@@ -444,12 +445,51 @@ if (stopReason === "completed") return { output, stopReason: cancelled ? "aborte
 ### 5.3 S6 —— gate / 审批机制承载 ABC 模式
 
 - **结论（L2 + L3 + 部分 L1）**：dsh **没有**可直接承载 §4 三模式的通用 gate 服务。可行路径是 §4.3 的三段式（状态落盘 + `ask_user_question` + 决议落盘）。
-- **已 L1 的部分**：三段式里的状态机与门控判定已在 `packages/core/src/state/machine.ts` 实现，并由 `packages/core/tests/machine.test.ts` 覆盖（8/8 通过）：判据未达标不产生 gate、达标产生待决 gate、`advance` 推进并写回滚点、`revise` 不推进、无 gate 时抛错而非静默推进、末阶段不越界推进、模式差异判定。
-- **剩余待验证**：`ask_user_question` 在真实会话中的呈递行为（需宿主重启）。
+- **已 L1 的部分**：三段式里的状态机与门控判定已在 `packages/core/src/state/machine.ts` 实现，并由 `packages/core/tests/machine.test.ts` 覆盖（8 条）：判据未达标不产生 gate、达标产生待决 gate、`advance` 推进并写回滚点、`revise` 不推进、无 gate 时抛错而非静默推进、末阶段不越界推进、模式差异判定。
+- **文件往返（L1）**：`packages/dsh-plugin/tests/state-store.test.ts`（10 条，真实磁盘）覆盖创建→落盘→读回→判定→决议→推进完整往返、快照回滚、跨会话恢复、半截 JSON 被拒、形状非法被拒、原子写不留 `.tmp`。
+- **工具管线端到端（L1）**：`packages/dsh-plugin/tests/gate-tool.test.ts`（6 条）把门控工具经**真实 `ToolRuntime.execute()`** 跑通——参数校验、output schema 校验、失败结果的 `isError` 形状，全部走真实执行管线而非直接调函数。覆盖：
+  - 未开始的项目如实回报 `{exists:false}`
+  - 完整门控往返：读状态 → `cvagent_gate_resolve` → 落盘推进，并核对磁盘内容
+  - **缺必填参数被参数校验拦下并返回 `isError`**（模型看到的是"哪个参数不合法"，不是堆栈）
+  - 工具内部抛错时返回可读的 `isError`
+  - 无待决 gate 时拒绝推进，且**状态未被改动**
+- **剩余待验证**：`ask_user_question` 在真实会话中的呈递行为（需宿主重启 + 真实会话）。
 - **已知限制（L2）**：`ask_user_question` 在 plan mode 生效期间被禁用；若部署没有可用的 answerer，审批类请求会 fail-closed。A 模式在无人在场的环境下会卡住——这恰好说明 **A 模式不该用于无人值守**，与 §4.1 表格一致。
 
-### 5.4 bundle 装载的 L1 实证（替代了「必须重启宿主」）
+#### 5.3.1 Cordis 插件装载的两个易错形态（E16，L1 实测）
 
+写 `gate-tool.test.ts` 时连续踩了两次，都是"看起来对、运行才发现"的类型，
+Phase 1 写 `cv-agent-dsh` 的插件行时会同样遇到，因此记录下来。
+
+**① 动态 import 一个包得到的是 ESM 命名空间对象，不能直接当插件传。**
+不同包导出的形态还不一样：
+
+| 包 | 插件形态 | 正确传法 |
+| --- | --- | --- |
+| `@deepseek-ai/dsh-system-prompt` | `default` 是**插件类** | `ctx.plugin(module.default)` |
+| `@deepseek-ai/dsh-tools` | 命名导出 `apply` + `static inject` | `ctx.plugin({ apply, inject })` 或直接 `new ToolRuntime(ctx)` |
+
+若把前者的类拆成 `{ name, apply }` 普通对象，cordis 直接拒绝：
+`invalid plugin, expect function or object with an "apply" method, received object`。
+注意 `Object.keys(module)` 看起来"有 apply"是假象——那个 `apply` 是命名导出的，
+不是 default 类的方法。
+
+**② 嵌套插件必须 await，否则有激活竞态。**
+
+```js
+// ✗ 子插件未必已激活，外面读到的 runtime 是 undefined
+await app.plugin({ name: 'host', apply(ctx) { ctx.plugin(child) } })
+
+// ✓ 在父插件的 apply 内 await 每个子插件
+await app.plugin({ name: 'host', async apply(ctx) { await ctx.plugin(child) } })
+```
+
+**对 Phase 1 的意义**：`cv-agent-dsh` 的插件入口应当导出一个标准的
+`{ name, inject, apply }` 或插件类，并在 `apply` 内 **await** 它自己的子插件
+（Service、工具行、prompt 章节）。同时，任何"注册后立刻使用"的代码路径都要
+意识到注册是异步落地的。
+
+### 5.4 bundle 装载的 L1 实证（替代了「必须重启宿主」）
 初稿把「新增 bundle 行在真实会话中生效」列为必须重启宿主才能验证的项目。**该结论已作废**：
 用一个**隔离的 `DSH_HOME`**（不改动运行中的宿主、不占用默认端口）即可完整验证装载链路。
 
@@ -519,6 +559,7 @@ v1.2 的 Phase 划分基本合理，但有三处需要调整：
 | 8 | §16.1 角色矩阵的可执行规格（逐角色断言工具面） | — | ✅ 已完成（5 个角色，真实 runtime 断言） | 我 |
 | 8b | S6 门控完整往返：`project_state.json` 持久化 + 快照回滚 | — | ✅ 已完成（10 条测试，真实磁盘） | 我 |
 | 8c | S2 上下文洁净：`spawn` vs `fork` 与结果压缩机制 | — | ✅ 已完成（源码级，§5.2.1） | 我 |
+| 8d | S6 工具管线端到端：门控工具经真实 `ToolRuntime.execute()` | — | ✅ 已完成（6 条测试，§5.3、§5.3.1） | 我 |
 | 9 | 冻结三库 schema（v1.2 §14 的待决策项，也是 Phase 2 的截止点） | 1 | **待你** | 你 |
 | 10 | 写 `cv-agent-dsh` 的第一批 row + `cvagent.*` 工具并链入 profile | 1、2 | 可开工（工具名契约与角色矩阵规格已就绪） | 我 |
 | 11 | S2 / S6 端到端实跑（真实子代理的 `toolFilter`、`outputSchema`、`ask_user_question` 呈递） | 10 | 待 10 | 我 |
@@ -571,7 +612,7 @@ pnpm run typecheck                             → 4/4 包通过（含 vendored�
 pnpm -r --if-present run build                 → 4/4 包通过
 pnpm test                                      → 全部通过：
                                                    core        17 passed
-                                                   dsh-plugin  10 passed
+                                                   dsh-plugin  16 passed（状态层 10 + 工具管线 6）
                                                    mcp-server  尚无测试（占位阶段，passWithNoTests）
                                                    vendor      88 passed | 2 skipped
 node tests/spike-s1-tool-isolation.mjs         → S1 SPIKE OK, 12 条断言
