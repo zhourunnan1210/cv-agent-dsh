@@ -57,7 +57,7 @@ node packages/dsh-plugin/tests/names.test.mjs  # 工具名契约与真实运行�
 node packages/dsh-plugin/tests/role-matrix.test.mjs  # §16.1 角色矩阵规格（5 个角色）
 ```
 
-测试分布：`core` 17 条（门控语义 8 + 授权模型 9）、`dsh-plugin` 16 条（状态持久化 10 + 工具管线端到端 6）、`vendor` 上游自带 88 条。
+测试分布：`core` 17 条（门控语义 8 + 授权模型 9）、`dsh-plugin` 20 条（状态持久化 10 + 状态族工具管线 10）、`vendor` 上游自带 88 条。
 
 > `lib/` 构建产物不入库，由 `pnpm install` 的 `prepare` 脚本现场生成；
 > 若 `node_modules` 已存在而 `lib/` 缺失，手动执行 `pnpm -r run build`。

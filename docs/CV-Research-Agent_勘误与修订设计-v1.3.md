@@ -51,6 +51,8 @@
 | E14 | （初稿遗漏）委派参数的下发时机 | — | `toolFilter` 必须使用**已注册的真实工具名**，否则 `restrict()` 在委派时抛错。Phase 1 的工具命名因此需要一份稳定的常量表，不能散落字符串字面量 | **L1** | 见 §4.1、§5.1 |
 | E15 | §7.2 / §4.2（未提及） | 隐含假设：实验子代理可在运行中请求授权（如启动云 GPU） | **不成立**。委派时子代理的审批策略被硬性钉为 `'never'`（`captureDelegatedPolicyOverrides`），与父策略无关。子代理只能做父已授权的事，**不能中途发起审批** | L2 | **改设计**，见 §4.6 |
 | E16 | （工程细节，两份文档均未涉及） | — | Cordis 插件装载有两个易错形态：① `dsh-system-prompt` 的 default 导出是**插件类**，必须直接传给 `ctx.plugin()`；拆成 `{ name, apply }` 普通对象会被拒绝（`invalid plugin ... received object`）；② 嵌套插件必须在父插件的 `apply` 内 **await**，否则子插件尚未激活就返回，外部读到的是 `undefined` | **L1**（两次失败实测） | 见 §5.3.1 |
+| E17 | （工程细节，未涉及） | — | **解构丢失 this 绑定**：`const { register } = ctx.tools; register(...)` 会让 `this.layers` 未定义（ToolRuntime 的 register 依赖实例字段）；必须保留 `ctx.tools.register(...)` 方法调用形态 | **L1**（三次失败实测后定位） | 见 §5.3.1 |
+| E18 | （工程细节，未涉及） | — | ① schemastery 默认值只在 Loader 按 Config schema 校验时注入；直接 `new` 构造时字段是 `undefined`，`JSON.stringify` 会**静默丢弃**（project_id 缺失被形状校验拦下）——构造器必须显式解析默认值；② loader 装载的行模块必须有 `default`（插件类）或命名 `apply` 导出，只有命名导出会被拒 | **L1**（隔离 profile 实机装载实测） | 见 §5.3.1 |
 
 ---
 
@@ -244,8 +246,13 @@ dsh 提供的正解是 `agentPresets.serviceFor(agent, name)`（"A request that 
 session but arrives from outside it, which is every browser RPC"）。它是只读寻址面，
 不是注入面。
 
-> ⚠️ **这一节需要你确认或推翻。** 它决定 `cv-agent-dsh` 第一批 row 怎么写，
-> 而服务落位是返工代价最高的一处（见 §7 顺序 2）。
+> ⚠️ **决策记录（2026-09-15）：用户已确认「就按建议执行」。**
+> 本节的归属建议自此**冻结**为工程约束：
+> - `kb` / `projectState` / `ideaScore` → preset + `isolate` realm；
+> - `expOrchestrator` → 项目内编排状态随 preset，跨项目资源账本（GPU 实例、预算）放宿主组合；
+> - 宿主读取 agent 的 preset 服务一律走 `agentPresets.serviceFor(agent, name)`，禁止宿主行 `inject` preset 服务。
+>
+> 后续修订需走文档变更记录，不得静默推翻。
 
 ### 4.5 【E6 增强】用作用域 prompt 章节承载"领域上下文 / 行为边界 / 输出契约"
 
@@ -489,6 +496,26 @@ await app.plugin({ name: 'host', async apply(ctx) { await ctx.plugin(child) } })
 （Service、工具行、prompt 章节）。同时，任何"注册后立刻使用"的代码路径都要
 意识到注册是异步落地的。
 
+#### 5.3.2 E17 / E18：Phase 1 落地状态族时踩到的三个运行时坑（L1）
+
+写 `cv-agent-dsh/state` 服务与 `state-tools` 工具行时，真实运行时连续三次拒绝，
+逐一定位如下（都已修复并有测试覆盖）：
+
+1. **解构丢失 this（E17）**：`const { register } = ctx.tools` 后调用 `register(...)`
+   会在 ToolRuntime 内部以 `this.layers` 未定义失败。`register` 依赖实例字段，
+   必须以 `ctx.tools.register(...)` 方法调用形态使用。教训：dsh 服务的方法**不要
+   解构**。
+
+2. **schemastery 默认值不是构造器语义（E18-①）**：`Config` 的 `.default()` 只在
+   Loader 按 schema 校验行配置时注入。测试/宿主代码直接 `new Service(ctx, config)`
+   时字段是 `undefined`——`project_id` 因此被 `JSON.stringify` 静默丢弃，落盘状态
+   被形状校验拦下。构造器必须显式 `config.x ?? 默认值`。
+
+3. **loader 的行模块导出形态（E18-②）**：行名 `cv-agent-dsh/state` 解析到的模块
+   必须有 `default`（插件类）或命名 `apply`；只有命名导出会被拒
+   （`invalid plugin ... received object`）。服务行加了 `export default` 后，
+   隔离 profile 实机装载通过（§5.4 同款验证）。
+
 ### 5.4 bundle 装载的 L1 实证（替代了「必须重启宿主」）
 初稿把「新增 bundle 行在真实会话中生效」列为必须重启宿主才能验证的项目。**该结论已作废**：
 用一个**隔离的 `DSH_HOME`**（不改动运行中的宿主、不占用默认端口）即可完整验证装载链路。
@@ -549,8 +576,8 @@ v1.2 的 Phase 划分基本合理，但有三处需要调整：
 
 | 顺序 | 事项 | 依赖 | 状态 | 谁能做 |
 | --- | --- | --- | --- | --- |
-| 1 | 评审并冻结本文件的 §4.1 / §4.2 / §4.4 / §4.6 | — | **待你** | 你 |
-| 2 | 服务平面归属判定：`kb` / `ideaScore` / `expOrchestrator` / `projectState` 各自归宿主还是 preset | §4.4 | **待你** | 你 + 我 |
+| 1 | 评审并冻结本文件的 §4.1 / §4.2 / §4.4 / §4.6 | — | ✅ 已裁定（2026-09-15，用户确认按建议执行；见 §4.4.1 决策记录） | 你 |
+| 2 | 服务平面归属判定：`kb` / `ideaScore` / `expOrchestrator` / `projectState` 各自归宿主还是 preset | §4.4 | ✅ 已裁定（同顺序 1） | 你 + 我 |
 | 3 | S1 工具白名单隔离实证 | — | ✅ 已完成（L1，12 条断言） | 我 |
 | 4 | S2 委派机制闭合：`toolFilter` → `restrict()` 链路定位 | — | ✅ 已完成（源码级 + S1 原语实证） | 我 |
 | 5 | S6 状态机与门控判定实现 | — | ✅ 已完成（`core/state/machine.ts`，8 条测试） | 我 |
@@ -560,14 +587,21 @@ v1.2 的 Phase 划分基本合理，但有三处需要调整：
 | 8b | S6 门控完整往返：`project_state.json` 持久化 + 快照回滚 | — | ✅ 已完成（10 条测试，真实磁盘） | 我 |
 | 8c | S2 上下文洁净：`spawn` vs `fork` 与结果压缩机制 | — | ✅ 已完成（源码级，§5.2.1） | 我 |
 | 8d | S6 工具管线端到端：门控工具经真实 `ToolRuntime.execute()` | — | ✅ 已完成（6 条测试，§5.3、§5.3.1） | 我 |
-| 9 | 冻结三库 schema（v1.2 §14 的待决策项，也是 Phase 2 的截止点） | 1 | **待你** | 你 |
-| 10 | 写 `cv-agent-dsh` 的第一批 row + `cvagent.*` 工具并链入 profile | 1、2 | 可开工（工具名契约与角色矩阵规格已就绪） | 我 |
-| 11 | S2 / S6 端到端实跑（真实子代理的 `toolFilter`、`outputSchema`、`ask_user_question` 呈递） | 10 | 待 10 | 我 |
+| 9 | 冻结三库 schema（v1.2 §14 的待决策项，也是 Phase 2 的截止点） | — | **待你**（Phase 2 开工前） | 你 |
+| 10 | 写 `cv-agent-dsh` 的第一批 row + `cvagent.*` 工具并链入 profile | 1、2 | ✅ 状态族完成：`projectState` 服务 + 5 个工具（`cvagent_state_get/advance/rollback`、`cvagent_mode_set`、`cvagent_gate_resolve`），10 条测试 + 隔离 profile 实机装载验证通过；cv-research preset 待续 | 我 |
+| 11 | S2 / S6 端到端实跑（真实子代理的 `toolFilter`、`outputSchema`、`ask_user_question` 呈递） | 10 | 待 cv-research preset | 我 |
 
-> 顺序 3–8 之所以能在你决策之前完成，是因为它们只依赖 dsh 运行时契约，不依赖服务平面归属。
-> 顺序 10 则**必须**等 1、2 定下来：服务放错位置的返工代价最大（勘误 §4.4）。
+> 顺序 1、2 已由用户裁定（2026-09-15：「就按照你建议的来做」）。
 >
-> **现在唯一挡着 Phase 1 开工的就是第 1、2 项**——两者都是你的决定。
+> ## Phase 1 进度（2026-09-15 起）
+>
+> | 交付物 | 状态 |
+> | --- | --- |
+> | `projectState` 服务（`cv-agent-dsh/state`） | ✅ 完成：文件持久化 + 门控语义封装 + 动态 prompt 章节（§4.5 落点） |
+> | 状态族 5 工具（`cv-agent-dsh/state-tools`） | ✅ 完成：真实 ToolRuntime 管线，10 条测试（含三模式空流水线验收） |
+> | 隔离 profile 实机装载验证 | ✅ 通过：`cv-agent-dsh` 链入 profile，两行经 overlay 装载，进程启动无激活错误（E18-② 修复后） |
+> | cv-research agent preset（standard 裁剪 + isolate group） | ⏳ 下一步 |
+> | 空流水线演示（真实会话里三模式走通） | ⏳ 依赖 preset 与宿主重启 |
 
 ---
 

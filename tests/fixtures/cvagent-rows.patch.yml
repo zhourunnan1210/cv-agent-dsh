@@ -1,0 +1,12 @@
+# cv-agent-dsh 的装载验证 overlay（宿主平面测试专用）。
+#
+# 生产部署中这两行挂在 cv-research preset 里（带 isolate realm）；
+# 本 overlay 用于隔离 profile 的实机装载验证：确认模块可解析、
+# 行能激活、服务与工具注册链路完整。测试后该 overlay 不进入任何 profile。
+- insert:
+    - id: cvagent-state
+      name: cv-agent-dsh/state
+      config:
+        projectDir: .spike-dsh-home/projects/load-test
+    - id: tool-cvagent-state
+      name: cv-agent-dsh/state-tools

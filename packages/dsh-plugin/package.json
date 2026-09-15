@@ -12,6 +12,14 @@
       "types": "./lib/index.d.ts",
       "default": "./lib/index.js"
     },
+    "./state": {
+      "types": "./lib/state/service.d.ts",
+      "default": "./lib/state/service.js"
+    },
+    "./state-tools": {
+      "types": "./lib/state/tools.d.ts",
+      "default": "./lib/state/tools.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -46,6 +54,10 @@
     "@deepseek-ai/schemastery": ">=3.18.1"
   },
   "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.2",
+    "@deepseek-ai/dsh-system-prompt": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-tools": "0.1.1-rc.2",
+    "@deepseek-ai/schemastery": "3.18.2",
     "@types/node": "^22.20.0",
     "typescript": "^5.9.0",
     "vitest": "^4.1.8"
