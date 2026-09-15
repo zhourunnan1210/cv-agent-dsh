@@ -20,6 +20,10 @@
       "types": "./lib/state/tools.d.ts",
       "default": "./lib/state/tools.js"
     },
+    "./orchestrator-guard": {
+      "types": "./lib/state/orchestrator-guard.d.ts",
+      "default": "./lib/state/orchestrator-guard.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [

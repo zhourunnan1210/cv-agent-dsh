@@ -72,6 +72,16 @@
     - id: tool-cvagent-state
       name: cv-agent-dsh/state-tools
 
+# ── orchestrator execution-level guard (E20) ───────────────────────────────
+#
+# Provides no service — consumes the host `tools` event surface and the host
+# `agents` registry, so it sits OUTSIDE the isolate group (same rule as the
+# tool rows inherited from standard). Denies read_*/download_* for the ROOT
+# agent only; delegated children remain governed by their toolFilter
+# whitelist. See packages/dsh-plugin/src/state/orchestrator-guard.ts.
+- id: cvagent-orchestrator-guard
+  name: cv-agent-dsh/orchestrator-guard
+
 # ── shell ───────────────────────────────────────────────────────────────────
 
 # `shell-env` stays in the HOST composition: `apps/cli/src/web.ts` injects it to

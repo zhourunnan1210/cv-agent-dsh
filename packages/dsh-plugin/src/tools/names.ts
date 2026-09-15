@@ -145,3 +145,22 @@ export const SCOUT_ALLOWED_TOOLS = [
   VENDOR_TOOL_NAMES.recommendations,
   VENDOR_TOOL_NAMES.recommendationsForPaper,
 ] as const
+
+/**
+ * 主编排会话禁用的重上下文工具（E20 执行级护栏的默认名单）。
+ *
+ * 依据 §1.3 原则四：全文阅读与 PDF 下载是重上下文操作，属于 Reader/Scout
+ * 子代理，不属于主 Agent。名字来自 L1 实证的 38 工具全名单。
+ */
+export const ORCHESTRATOR_DENY_TOOLS = [
+  'read_semantic_paper',
+  'read_arxiv_paper',
+  'read_by_doi',
+  'read_biorxiv_paper',
+  'read_medrxiv_paper',
+  'download_semantic',
+  'download_arxiv',
+  'download_by_doi',
+  'download_biorxiv',
+  'download_medrxiv',
+] as const
