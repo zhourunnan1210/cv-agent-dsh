@@ -76,6 +76,18 @@ export declare const IDEA_TOOLS: {
  * 用于启动自检：确认注册的工具与 `toolFilter` 引用的名字一致。
  */
 export declare const ALL_CVAGENT_TOOLS: readonly ("cvagent_state_get" | "cvagent_state_advance" | "cvagent_state_rollback" | "cvagent_mode_set" | "cvagent_gate_resolve" | "cvagent_kb_import_paper" | "cvagent_kb_extract" | "cvagent_kb_upsert_entry" | "cvagent_kb_search" | "cvagent_kb_summary" | "cvagent_domain_bootstrap" | "cvagent_domain_freeze" | "cvagent_domain_propose_revision" | "cvagent_domain_bind" | "cvagent_idea_generate" | "cvagent_idea_score" | "cvagent_exp_plan" | "cvagent_exp_launch" | "cvagent_exp_status" | "cvagent_exp_collect" | "cvagent_write_draft")[];
+/**
+ * 工具族 → 工具名的映射。
+ *
+ * 用于按族构造 `toolFilter.allow`（勘误 §4.2 的角色矩阵），避免在委派处
+ * 重复罗列字符串。新增工具时只需加入对应族，角色矩阵自动跟随。
+ */
+export declare const CVAGENT_TOOL_FAMILIES: {
+    readonly state: ("cvagent_state_get" | "cvagent_state_advance" | "cvagent_state_rollback" | "cvagent_mode_set" | "cvagent_gate_resolve")[];
+    readonly kb: ("cvagent_kb_import_paper" | "cvagent_kb_extract" | "cvagent_kb_upsert_entry" | "cvagent_kb_search" | "cvagent_kb_summary")[];
+    readonly domain: ("cvagent_domain_bootstrap" | "cvagent_domain_freeze" | "cvagent_domain_propose_revision" | "cvagent_domain_bind")[];
+    readonly idea: ("cvagent_idea_generate" | "cvagent_idea_score" | "cvagent_exp_plan" | "cvagent_exp_launch" | "cvagent_exp_status" | "cvagent_exp_collect" | "cvagent_write_draft")[];
+};
 /** 单个 `cvagent.*` 工具名。 */
 export type CvAgentToolName = (typeof ALL_CVAGENT_TOOLS)[number];
 /**

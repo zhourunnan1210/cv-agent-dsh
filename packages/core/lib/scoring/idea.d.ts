@@ -21,7 +21,86 @@ export interface IdeaCandidate {
     readonly innovation: string;
     /** 建议的 1–3 篇 baseline 论文 ID。 */
     readonly baselines: readonly string[];
+    /**
+     * 人工授权标记。
+     *
+     * **为什么需要这个字段**（勘误 E15）：委派给子代理时，其审批策略被 dsh
+     * 硬性钉为 `'never'`——子代理**不能**在运行中途发起审批请求，只能做父代理
+     * 已被授权做的事。因此一切需要人类授权的动作（启动云 GPU 实例、调用计费 API、
+     * 破坏性文件操作）都必须在**委派之前**由主 Agent 取得授权，并把结果作为
+     * 数据下发。
+     *
+     * 这里记录的就是那份授权：主 Agent 取得用户同意后写入，子代理只读。
+     * 未授权时子代理**不得**执行对应动作，只能回报
+     * `status: 'needs_authorization'`（见 `NeedsAuthorization`）请求主 Agent 补授权。
+     */
+    readonly authorization?: Authorization;
 }
+/**
+ * 一次委派的人工授权记录。
+ *
+ * 设计依据：勘误 §5.2 / E15。
+ */
+export interface Authorization {
+    /** 授权范围：本次委派允许执行的动作。 */
+    readonly granted: readonly AuthorizedAction[];
+    /** 授权人标识（用户会话或用户本人）。 */
+    readonly granted_by: string;
+    /** ISO 8601 时间戳。 */
+    readonly granted_at: string;
+    /**
+     * 成本上限（如 GPU 小时、ai4scholar 积分）。
+     *
+     * 与 v1.2 §20 的预算护栏对应：C 模式超限需自动降级为 B（勘误 §4.3），
+     * 降级后的重新授权同样经由此字段下发。
+     */
+    readonly budget?: Readonly<Record<string, number>>;
+}
+/**
+ * 需要人类授权才能继续的动作类别。
+ *
+ * 对应 v1.2 §4.2 的「C 模式安全边界」三条，加上实验执行层的具体动作。
+ */
+export type AuthorizedAction = 
+/** 启动云 GPU 实例（云厂商 API / SSH 拉起）。 */
+'launch_gpu_instance'
+/** 调用计费 API（ai4scholar credits）。 */
+ | 'call_billed_api'
+/** 破坏性文件系统操作。 */
+ | 'destructive_fs_operation'
+/** 超出既定预算上限。 */
+ | 'exceed_budget';
+/**
+ * 子代理回报「需要授权」时的结构化载荷。
+ *
+ * 这是 E15 约束下的**唯一合法出路**：子代理无法自行发起审批，因此它把这个
+ * 载荷作为 `outputSchema` 的结构化结果返回给主 Agent，由主 Agent 走
+ * §4.3 的三段式门控向用户取得授权，再决定是否重新委派。
+ *
+ * @example
+ * ```ts
+ * const reply: NeedsAuthorization = {
+ *   status: 'needs_authorization',
+ *   action: 'launch_gpu_instance',
+ *   reason: '跨数据集评估需要在 4090 上跑 6 小时，当前无授权',
+ *   estimated_cost: { gpu_hours: 6 },
+ * }
+ * ```
+ */
+export interface NeedsAuthorization {
+    readonly status: 'needs_authorization';
+    readonly action: AuthorizedAction;
+    /** 自然语言说明为何需要该授权。 */
+    readonly reason: string;
+    /** 预估成本，供主 Agent 向用户呈现。 */
+    readonly estimated_cost?: Readonly<Record<string, number>>;
+}
+/**
+ * 判断子代理返回的结构化结果是否为「需要授权」。
+ *
+ * 主 Agent 在收到子代理结果后应先过这个判断，再决定是继续还是走门控。
+ */
+export declare function isNeedsAuthorization(value: unknown): value is NeedsAuthorization;
 /** 撞车风险级别（v1.2 §6.2 组合判定）。 */
 export type CollisionRisk = 'high' | 'medium' | 'low';
 /**

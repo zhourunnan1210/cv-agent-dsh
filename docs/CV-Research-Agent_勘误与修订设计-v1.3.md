@@ -49,7 +49,7 @@
 | E12 | 仓库根目录 | 仓库名 `cv-research-agent` | 实际工作区目录为 `D:\Code\VScodeRepo\dsh-plugin`（目录名早于项目命名）。已按用户决定：**目录名保留，仓库身份为 `cv-research-agent`** | L1 | 记录备案 |
 | E13 | §16.1 隔离红线的保障方式 | 靠 preset 定义正确来保证 Orchestrator 看不到重上下文工具 | 实际由 **runtime 双重兜底**：`restrict()` 无 scope 时直接抛错；过滤器含未知工具名时抛错并列出已知工具。红线不是"我们写对才有" | **L1** | 见 §5.1 |
 | E14 | （初稿遗漏）委派参数的下发时机 | — | `toolFilter` 必须使用**已注册的真实工具名**，否则 `restrict()` 在委派时抛错。Phase 1 的工具命名因此需要一份稳定的常量表，不能散落字符串字面量 | **L1** | 见 §4.1、§5.1 |
-| E15 | §7.2 / §4.2（未提及） | 隐含假设：实验子代理可在运行中请求授权（如启动云 GPU） | **不成立**。委派时子代理的审批策略被硬性钉为 `'never'`（`captureDelegatedPolicyOverrides`），与父策略无关。子代理只能做父已授权的事，**不能中途发起审批** | L2 | 见 §5.2 |
+| E15 | §7.2 / §4.2（未提及） | 隐含假设：实验子代理可在运行中请求授权（如启动云 GPU） | **不成立**。委派时子代理的审批策略被硬性钉为 `'never'`（`captureDelegatedPolicyOverrides`），与父策略无关。子代理只能做父已授权的事，**不能中途发起审批** | L2 | **改设计**，见 §4.6 |
 
 ---
 
@@ -235,6 +235,59 @@ v1.2 的 §16.2 五段式 prompt 骨架全部塞进 preset 的 persona。实际 
 
 **收益**：§16.2 的"术语词典超过 200 条时只注入相关子集"从一句愿望变成可实现的机制——章节文本是每次组装时计算的。
 
+### 4.6 【E15】人工授权必须发生在委派之前
+
+**问题**：v1.2 §7.2 的实验子 Agent 池（DataPrep / Train / Eval / Repro）与 §7.3 的
+云 GPU 管理放在一起读，会得到一个隐含假设——子 Agent 在运行中需要授权时可以"问一下"。
+**这个假设不成立。** 委派时子代理的审批策略被 dsh 硬性钉为 `'never'`
+（`captureDelegatedPolicyOverrides`，见 §5.2），子代理**没有任何途径**发起审批请求。
+
+**后果**：若把"启动云 GPU 实例"设计成子代理运行中途的动作，该动作会**静默失败或
+直接不可用**，而不是弹出一个授权请求。夜间 C 模式跑长任务时这尤其危险——以为
+在等人授权，实际是卡死或异常终止。
+
+**修订设计：授权前置 + 结构化回退。**
+
+```
+① 委派前（主 Agent，有审批能力）
+   主 Agent 判定本次委派是否需要受限动作
+   → 需要：走 §4.3 三段式门控，用 ask_user_question 取得用户授权
+   → 取得后写入 Authorization 记录，随委派参数下发
+
+② 委派（主 Agent → 子 Agent）
+   子 Agent 的 persona/briefing 中明确列出：本次已授权哪些动作、上限是多少
+   （授权是数据，不是子代理的推断）
+
+③ 子代理运行中
+   - 在授权范围内：直接执行
+   - 超出授权范围：**不得执行**，返回结构化 NeedsAuthorization
+     { status: 'needs_authorization', action, reason, estimated_cost }
+
+④ 主 Agent 收到 NeedsAuthorization
+   → 视为一次阶段内 gate，走 §4.3 呈递给用户
+   → 用户批准则补授权并重新委派（或向下发一条 send_message 更新授权）
+   → 用户拒绝则记录并终止该实验分支
+```
+
+**落地形态**（已在 core 层实现，见 §7 附录 A）：
+
+| 契约 | 位置 | 作用 |
+| --- | --- | --- |
+| `AuthorizedAction` | `core/src/scoring/idea.ts` | 四类受限动作：`launch_gpu_instance` / `call_billed_api` / `destructive_fs_operation` / `exceed_budget` |
+| `Authorization` | 同上 | 授权范围 + 授权人 + 时间戳 + 预算上限 |
+| `NeedsAuthorization` | 同上 | 子代理请求补授权的结构化载荷 |
+| `isNeedsAuthorization()` | 同上 | 主 Agent 收到子代理结果后的判定入口 |
+
+**为什么用「结构化回报」而不是让子代理报错**：报错会让主 Agent 无法区分
+"实验失败了"与"缺授权"，前者该换方案、后者该问用户。把后者做成一个显式的、
+有类型的返回值，主 Agent 才能据此走门控而不是误判为技术故障（对照 §19 降级矩阵：
+"训练子 Agent 代码运行失败"与"缺授权"是两条不同的处置路径）。
+
+**对 §4.2 模式表的影响**：C 模式的安全边界（计费 API / 破坏性文件操作 / 启动 GPU）
+**全部在①完成**，不存在"运行到一半再降级询问"的路径。C 模式超限自动降级为 B
+（§4.2）因此也必须表现为：主 Agent 在下一次委派前发现超限 → 不委派 → 转为呈递。
+这与 §4.3 的三段式是同一套机制，不需要第二套。
+
 ---
 
 ## 5. Phase 0 Spike 修订与状态
@@ -393,20 +446,22 @@ v1.2 的 Phase 划分基本合理，但有三处需要调整：
 
 | 顺序 | 事项 | 依赖 | 状态 | 谁能做 |
 | --- | --- | --- | --- | --- |
-| 1 | 评审并冻结本文件的 §4.1 / §4.2 / §4.4 | — | **待你** | 你 |
+| 1 | 评审并冻结本文件的 §4.1 / §4.2 / §4.4 / §4.6 | — | **待你** | 你 |
 | 2 | 服务平面归属判定：`kb` / `ideaScore` / `expOrchestrator` / `projectState` 各自归宿主还是 preset | §4.4 | **待你** | 你 + 我 |
 | 3 | S1 工具白名单隔离实证 | — | ✅ 已完成（L1，12 条断言） | 我 |
 | 4 | S2 委派机制闭合：`toolFilter` → `restrict()` 链路定位 | — | ✅ 已完成（源码级 + S1 原语实证） | 我 |
-| 5 | S6 状态机与门控判定实现 | — | ✅ 已完成（`core/state/machine.ts`，8/8 测试） | 我 |
+| 5 | S6 状态机与门控判定实现 | — | ✅ 已完成（`core/state/machine.ts`，8 条测试） | 我 |
 | 6 | bundle 装载链路实证 | — | ✅ 已完成（隔离 `DSH_HOME`，§5.4） | 我 |
-| 7 | 按 E15 修订 §7.2：需要人类授权的实验动作上移到主 Agent 门控 | — | 待纳入设计 | 我（可先做） |
-| 8 | 冻结三库 schema（v1.2 §14 的待决策项，也是 Phase 2 的截止点） | 1 | **待你** | 你 |
-| 9 | 写 `cv-agent-dsh` 的第一批 row + `cvagent.*` 工具并链入 profile | 1、2 | 可开工（工具名契约已就绪） | 我 |
-| 10 | S2 / S6 端到端实跑（真实子代理的 `toolFilter`、`outputSchema`、`ask_user_question` 呈递） | 9 | 待 9 | 我 |
+| 7 | E15 授权模型落地：`Authorization` / `NeedsAuthorization` 契约与判定 | — | ✅ 已完成（§4.6，9 条测试） | 我 |
+| 8 | §16.1 角色矩阵的可执行规格（逐角色断言工具面） | — | ✅ 已完成（5 个角色，真实 runtime 断言） | 我 |
+| 9 | 冻结三库 schema（v1.2 §14 的待决策项，也是 Phase 2 的截止点） | 1 | **待你** | 你 |
+| 10 | 写 `cv-agent-dsh` 的第一批 row + `cvagent.*` 工具并链入 profile | 1、2 | 可开工（工具名契约与角色矩阵规格已就绪） | 我 |
+| 11 | S2 / S6 端到端实跑（真实子代理的 `toolFilter`、`outputSchema`、`ask_user_question` 呈递） | 10 | 待 10 | 我 |
 
-> 顺序 3–6 之所以能在你决策之前完成，是因为它们只依赖 dsh 运行时契约，不依赖服务平面归属。
-> 顺序 9 则**必须**等 1、2 定下来：服务放错位置的返工代价最大（勘误 §4.4）。
-> 顺序 7 是 E15 的直接后续，纯设计工作，可与你的评审并行。
+> 顺序 3–8 之所以能在你决策之前完成，是因为它们只依赖 dsh 运行时契约，不依赖服务平面归属。
+> 顺序 10 则**必须**等 1、2 定下来：服务放错位置的返工代价最大（勘误 §4.4）。
+>
+> **现在唯一挡着 Phase 1 开工的就是第 1、2 项**——两者都是你的决定。
 
 ---
 
@@ -422,12 +477,14 @@ D:\Code\VScodeRepo\dsh-plugin\          ← cv-research-agent monorepo 根
 ├── packages/
 │   ├── core/                           @cv-research/core（纯 TS，零 dsh 依赖）
 │   │   ├── src/schema/kb.ts            三库契约（基础字段 + Domain Pack 扩展字段）
-│   │   ├── src/scoring/idea.ts         Idea 打分契约
+│   │   ├── src/scoring/idea.ts         Idea 打分契约 + 授权模型（§4.6）
 │   │   ├── src/state/machine.ts        大 Loop 状态机与门控（纯函数）
 │   │   ├── src/domain/pack.ts          Domain Pack 契约（冻结需评审签名）
-│   │   └── tests/machine.test.ts       门控语义测试（8/8 通过）
-│   ├── dsh-plugin/                     cv-agent-dsh（声明 dsh.bundle.patch，代码待 Phase 1）
-│   ├── mcp-server/                     @cv-research/mcp
+│   │   └── tests/                      17 条测试（门控 8 + 授权 9）
+│   ├── dsh-plugin/                     cv-agent-dsh（声明 dsh.bundle.patch）
+│   │   ├── src/tools/names.ts          工具名契约（21 个 cvagent + 12 个 vendored 引用）
+│   │   └── tests/                      names.test.mjs、role-matrix.test.mjs
+│   ├── mcp-server/                     @cv-research/mcp（占位，Phase 1 后实现）
 │   └── vendor/dsh-ai4scholar/          上游 0.3.7（MIT），已构建出 lib/
 ├── tests/
 │   ├── smoke-vendor-plugin.mjs         L1 实证：38 工具注册验证
@@ -445,8 +502,10 @@ git --version                                  → 2.51.0.windows.1
 pnpm install (root)                            → Done in 20s, 自动构建 vendored 包
 node tests/smoke-vendor-plugin.mjs             → SMOKE OK, toolCount=38
 dsh plugin --profile web add link:...          → + dsh-ai4scholar, bundles 追加成功
-pnpm -C packages/core run typecheck            → 通过
-pnpm -C packages/core run build                → 产出 lib/
-pnpm -C packages/core run test                 → 8/8 通过（需放宽执行策略，见 README 约束 5）
-node tests/spike-s1-tool-isolation.mjs         → S1 SPIKE OK, 12 条断言全部通过
+pnpm run typecheck                             → 4/4 包通过（含 vendored）
+pnpm -r run build                              → 4/4 包通过
+pnpm -C packages/core run test                 → 17/17 通过（需放宽执行策略，见 README 约束 5）
+node tests/spike-s1-tool-isolation.mjs         → S1 SPIKE OK, 12 条断言
+node packages/dsh-plugin/tests/names.test.mjs  → NAMES CONTRACT OK
+node packages/dsh-plugin/tests/role-matrix.test.mjs → ROLE MATRIX SPEC OK（5 个角色）
 ```

@@ -87,6 +87,19 @@ export const ALL_CVAGENT_TOOLS = [
   ...Object.values(IDEA_TOOLS),
 ] as const
 
+/**
+ * 工具族 → 工具名的映射。
+ *
+ * 用于按族构造 `toolFilter.allow`（勘误 §4.2 的角色矩阵），避免在委派处
+ * 重复罗列字符串。新增工具时只需加入对应族，角色矩阵自动跟随。
+ */
+export const CVAGENT_TOOL_FAMILIES = {
+  state: Object.values(STATE_TOOLS),
+  kb: Object.values(KB_TOOLS),
+  domain: Object.values(DOMAIN_TOOLS),
+  idea: Object.values(IDEA_TOOLS),
+} as const
+
 /** 单个 `cvagent.*` 工具名。 */
 export type CvAgentToolName = (typeof ALL_CVAGENT_TOOLS)[number]
 

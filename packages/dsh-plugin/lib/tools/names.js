@@ -82,6 +82,18 @@ export const ALL_CVAGENT_TOOLS = [
     ...Object.values(IDEA_TOOLS),
 ];
 /**
+ * 工具族 → 工具名的映射。
+ *
+ * 用于按族构造 `toolFilter.allow`（勘误 §4.2 的角色矩阵），避免在委派处
+ * 重复罗列字符串。新增工具时只需加入对应族，角色矩阵自动跟随。
+ */
+export const CVAGENT_TOOL_FAMILIES = {
+    state: Object.values(STATE_TOOLS),
+    kb: Object.values(KB_TOOLS),
+    domain: Object.values(DOMAIN_TOOLS),
+    idea: Object.values(IDEA_TOOLS),
+};
+/**
  * dsh-ai4scholar 中本项目依赖的工具名。
  *
  * 由 L1 实证得出（`tests/smoke-vendor-plugin.mjs` 打印的 38 个工具全名单），
