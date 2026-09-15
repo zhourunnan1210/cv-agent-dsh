@@ -1,0 +1,17 @@
+{
+  "name": "cv-research-agent",
+  "version": "0.0.0",
+  "private": true,
+  "description": "CV 自主科研 Agent 平台 —— 平台无关核心（@cv-research/core）与 dsh 适配层（cv-agent-dsh）",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.19"
+  },
+  "packageManager": "pnpm@12.4.2",
+  "scripts": {
+    "typecheck": "pnpm -r --if-present typecheck",
+    "test": "pnpm -r --if-present test",
+    "build": "pnpm -r --if-present build"
+  }
+}

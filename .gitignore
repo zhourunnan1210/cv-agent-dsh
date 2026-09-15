@@ -1,0 +1,36 @@
+# 依赖
+node_modules/
+.pnpm-store/
+.pnpm-home/
+
+# 构建产物
+dist/
+*.tsbuildinfo
+# vendored 上游包：源码入库，lib/ 由 pnpm install 的 prepare 脚本现场构建
+packages/vendor/*/lib/
+
+# 运行期数据（文档 §11：data/ 整体 gitignore；三库 SQLite 走回滚快照而非 git）
+data/
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.db
+
+# 密钥：禁止进入 git 与原模型上下文（文档 §11、§23）
+.env
+.env.*
+!.env.example
+*.credentials.yaml
+.credentials.yaml
+
+# 本地实验与临时产物
+.tmp/
+tmp/
+*.log
+logs/
+
+# 编辑器 / 操作系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

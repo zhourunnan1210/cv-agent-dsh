@@ -1,0 +1,19 @@
+# 统一换行符：仓库内一律 LF，避免 Windows 上 git 反复改写工作区文件
+* text=auto eol=lf
+
+# 二进制文件不做换行转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.woff binary
+*.woff2 binary
+
+# 锁文件：合并时冲突不可手工解决，需重新生成
+pnpm-lock.yaml -diff merge=binary
+
+# 构建产物与补丁文件不参与 diff 统计
+lib/** linguist-generated=true
