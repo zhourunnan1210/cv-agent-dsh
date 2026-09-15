@@ -378,6 +378,44 @@ v1.2 的 §16.2 五段式 prompt 骨架全部塞进 preset 的 persona。实际 
   ① 子代理不携带父历史；② 父只收到 `structured`；③ `outputSchema` 违反时报错而非
   静默回传自由文本；④ 子代理确实看不到 `toolFilter` 排除的工具。
 
+#### 5.2.1 上下文洁净的两个补充实证（L2 源码级）
+
+**① `spawn` 确实不继承父历史，`fork` 才继承。** 两个 provider 的对比是结构性的：
+
+| provider | `inheritsParentContext` | `start()` 传入的 seed |
+| --- | --- | --- |
+| `spawn-in-process` | `false` | `{}` —— **无 seed**，子代理从空历史开始 |
+| `fork-in-process` | `true` | `completedTurnPrefix(parent)` 产出的父会话事件前缀 |
+
+`spawn` 的 `prepareContinuable()` 同样返回 `{}`。因此 §1.3 原则四（重上下文操作
+分发至子 Agent、主 Agent 保持洁净）在默认委派路径上**由 provider 语义保证**，
+不依赖 prompt 自觉。这也说明：**不要用 `fork` 做实验类委派**——它会把父会话历史
+一并带进子代理，正好与原则四相反。
+
+**② 父代理拿到的结果确实是"压缩后的"，不是子代理的会话流水。**
+`readResult()` 只做三件事：
+
+```js
+const own = child.session.snapshotEvents(boundary);   // 只看子代理自己的事件
+const output = finalAssistantOutput(own) ?? [];       // 最终助手输出
+return { output, structured: structured?.captured.value, stopReason };
+```
+
+它**不返回** `own`（子代理的完整事件流），只返回最终输出、结构化结果与停止原因。
+这正是 v1.2 §9.4 上下文预算表里「只回传关键指标」的实现层对应物。
+
+**③ 一条对 §19 降级矩阵有用的行为**：当声明了 `outputSchema` 而子代理**没有**
+通过结构化输出工具应答时，`readResult` 不会编造 `structured` 字段，而是把
+`stopReason` 从 `completed` 改判为 `error`（或 `aborted`）：
+
+```js
+if (stopReason === "completed") return { output, stopReason: cancelled ? "aborted" : "error" };
+```
+
+→ **结构化输出是可信的**：`structured` 字段存在，就说明子代理确实按契约应答过。
+主 Agent 可以据此区分「正常结果」与「契约违反」，不需要额外校验。这条应作为
+`cvagent_exp_*` 工具的返回处理依据。
+
 ### 5.3 S6 —— gate / 审批机制承载 ABC 模式
 
 - **结论（L2 + L3 + 部分 L1）**：dsh **没有**可直接承载 §4 三模式的通用 gate 服务。可行路径是 §4.3 的三段式（状态落盘 + `ask_user_question` + 决议落盘）。
