@@ -55,6 +55,7 @@ node tests/smoke-vendor-plugin.mjs   # 验证基座插件 38 个工具注册正�
 2. **pnpm 全局安装与自身状态目录**可能被文件策略拒绝；本仓库的 `.npmrc` 已把 pnpm 状态目录移入工作区内。
 3. **新增 bundle 行不会热加载**：`dsh.profile.bundles` 的改动需要重启 dsh 宿主进程才生效。
 4. **vendored 上游包必须构建**：上游源码仓库不含 `lib/`，克隆后需 `pnpm install`（触发 `prepare`）或 `pnpm run build`。
+5. **`pnpm test` 在受限文件策略下会被拒**：Windows 上 Vitest/Vite 解析真实路径时会拉起辅助子进程（`spawn EPERM`），这是沙箱边界而非配置问题。`pnpm typecheck` 与 `pnpm build` 不受影响。在放宽的执行策略下或 CI 中测试可正常运行（实测 core 包 8/8 通过）。
 
 ## 文档
 
