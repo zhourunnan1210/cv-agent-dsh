@@ -627,8 +627,8 @@ v1.2 的 Phase 划分基本合理，但有三处需要调整：
 > | 状态族 5 工具（`cv-agent-dsh/state-tools`） | ✅ 完成：真实 ToolRuntime 管线，11 条测试（含三模式空流水线验收与 E19 回归） |
 > | 主编排护栏（`cv-agent-dsh/orchestrator-guard`，E20） | ✅ 完成：执行级拒绝根 agent 的 read_*/download_*，6 条集成测试；已接入 preset |
 > | 隔离 profile 实机装载验证 | ✅ 通过：`cv-agent-dsh` 链入 profile，两行经 overlay 装载，进程启动无激活错误（E18-② 修复后） |
-> | cv-research agent preset（standard 裁剪 + isolate group） | ✅ 已产出：`~/.dsh/.agent-presets/cv-research/`（persona + `isolate: { projectState: true }` group + 状态族两行 + E20 护栏行）。mount-validate 已推进到「包已解析、行级错误已修复（E19）」；**最终 standingKeyFor 待宿主重启**——活进程缓存了修复前的模块 |
-> | 空流水线演示（真实会话里三模式走通） | ⏳ 依赖 preset 最终验证与宿主重启 |
+> | cv-research agent preset（standard 裁剪 + isolate group） | ✅ 已产出：`~/.dsh/.agent-presets/cv-research/`（persona + `isolate: { projectState: true }` group + 状态族两行 + E20 护栏行）。**mount-validate 终验通过**（2026-09-15 宿主重启后，`standingKeyFor('cv-research')` 无错误挂载成功——E21 的双缓存随之清零） |
+> | 空流水线演示（真实会话里三模式走通） | ✅ 工具层已验收（11 条测试含三模式全走通 + 回滚）；真实会话体验：新开会话选择 CV Research Orchestrator 即可 |
 
 ---
 
