@@ -8,6 +8,10 @@ dist/
 *.tsbuildinfo
 # vendored 上游包：源码入库，lib/ 由 pnpm install 的 prepare 脚本现场构建
 packages/vendor/*/lib/
+# 本仓库各包的 lib/ 同样是 prepare 现场构建的产物，不入库
+packages/core/lib/
+packages/dsh-plugin/lib/
+packages/mcp-server/lib/
 
 # 运行期数据（文档 §11：data/ 整体 gitignore；三库 SQLite 走回滚快照而非 git）
 data/
