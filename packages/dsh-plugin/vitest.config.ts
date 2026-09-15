@@ -6,5 +6,6 @@ export default defineConfig({
     // 子进程会被拒绝（spawn EPERM），线程池不触发该限制。
     pool: 'threads',
     include: ['tests/**/*.test.ts'],
+    passWithNoTests: true,
   },
 })

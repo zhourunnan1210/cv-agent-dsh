@@ -564,13 +564,27 @@ D:\Code\VScodeRepo\dsh-plugin\          ← cv-research-agent monorepo 根
 pnpm -v                                        → 12.4.2
 node -v                                        → v24.19.0
 git --version                                  → 2.51.0.windows.1
-pnpm install (root)                            → Done in 20s, 自动构建 vendored 包
+pnpm install (root)                            → 自动构建 vendored 包
 node tests/smoke-vendor-plugin.mjs             → SMOKE OK, toolCount=38
 dsh plugin --profile web add link:...          → + dsh-ai4scholar, bundles 追加成功
 pnpm run typecheck                             → 4/4 包通过（含 vendored）
-pnpm -r run build                              → 4/4 包通过
-pnpm -C packages/core run test                 → 17/17 通过（需放宽执行策略，见 README 约束 5）
+pnpm -r --if-present run build                 → 4/4 包通过
+pnpm test                                      → 全部通过：
+                                                   core        17 passed
+                                                   dsh-plugin  10 passed
+                                                   mcp-server  尚无测试（占位阶段，passWithNoTests）
+                                                   vendor      88 passed | 2 skipped
 node tests/spike-s1-tool-isolation.mjs         → S1 SPIKE OK, 12 条断言
 node packages/dsh-plugin/tests/names.test.mjs  → NAMES CONTRACT OK
 node packages/dsh-plugin/tests/role-matrix.test.mjs → ROLE MATRIX SPEC OK（5 个角色）
 ```
+
+**本轮修正的两处工程缺陷**（都是「命令看起来绿、实际有问题」的类型）：
+
+1. `pnpm -r build` 因 `mcp-server` 的空 `src/` 以 TS18003 失败——空目录会掩盖真正的编译错误。已加占位模块。
+2. 根 `pnpm test` 因 `mcp-server` 无测试文件而以非零退出（`ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL`），
+   把「还没写测试」伪装成「测试失败」。已加 `passWithNoTests`。
+
+**一处环境记录**：`.npmrc` 把 pnpm 的 global/state/store 指向 `.pnpm-home/`。这最初是为绕开
+受限文件策略（pnpm 的 package-manager env 目录不可写），现在作为「pnpm 状态全部留在工作区内」
+的工程选择保留——部署到 CI 或云 GPU 机器时可按需删除。

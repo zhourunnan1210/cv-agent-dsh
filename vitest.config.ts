@@ -6,5 +6,8 @@ export default defineConfig({
     // 会被拒绝（spawn EPERM）。线程池不触发该限制。
     pool: 'threads',
     include: ['tests/**/*.test.ts'],
+    // 尚无测试的包（如 mcp-server 占位阶段）不应让整个 workspace 的
+    // `pnpm test` 以非零退出——那会把「还没写测试」伪装成「测试失败」。
+    passWithNoTests: true,
   },
 })

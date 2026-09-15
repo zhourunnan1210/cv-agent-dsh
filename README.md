@@ -46,10 +46,15 @@ data/                         运行期数据（gitignore）
 
 ```bash
 pnpm install                          # 构建 vendored dsh-ai4scholar + core + dsh-plugin
-node tests/smoke-vendor-plugin.mjs    # L1 实证：基座插件 38 个工具注册正常
-node tests/spike-s1-tool-isolation.mjs        # L1 实证：工具白名单隔离（12 条断言）
-node packages/dsh-plugin/tests/names.test.mjs # 工具名契约与真实运行时对齐
 pnpm typecheck                        # 全 workspace 类型检查
+pnpm -r --if-present run build        # 全 workspace 构建
+pnpm test                             # 全 workspace 测试（含 vendored 包自带套件）
+
+# L1 实证脚本（驱动真实 dsh 运行时，非 mock）
+node tests/smoke-vendor-plugin.mjs             # 基座插件 38 个工具注册
+node tests/spike-s1-tool-isolation.mjs         # 工具白名单隔离（12 条断言）
+node packages/dsh-plugin/tests/names.test.mjs  # 工具名契约与真实运行时对齐
+node packages/dsh-plugin/tests/role-matrix.test.mjs  # §16.1 角色矩阵规格（5 个角色）
 ```
 
 > `lib/` 构建产物不入库，由 `pnpm install` 的 `prepare` 脚本现场生成；
@@ -57,11 +62,14 @@ pnpm typecheck                        # 全 workspace 类型检查
 
 ## 已知工程约束
 
-1. **`dsh plugin add` 会写 `$DSH_HOME/profiles/<name>/node_modules`**，在工作区之外；在受限文件策略下需要提权审批。
-2. **pnpm 全局安装与自身状态目录**可能被文件策略拒绝；本仓库的 `.npmrc` 已把 pnpm 状态目录移入工作区内。
-3. **新增 bundle 行不会热加载**：`dsh.profile.bundles` 的改动需要重启 dsh 宿主进程才生效。
-4. **vendored 上游包必须构建**：上游源码仓库不含 `lib/`，克隆后需 `pnpm install`（触发 `prepare`）或 `pnpm run build`。
-5. **`pnpm test` 在受限文件策略下会被拒**：Windows 上 Vitest/Vite 解析真实路径时会拉起辅助子进程（`spawn EPERM`），这是沙箱边界而非配置问题。`pnpm typecheck` 与 `pnpm build` 不受影响。在放宽的执行策略下或 CI 中测试可正常运行（实测 core 包 8/8 通过）。
+1. **新增 bundle 行不会热加载**：`dsh.profile.bundles` 的改动需要重启 dsh 宿主进程才生效。
+2. **vendored 上游包必须构建**：上游源码仓库不含 `lib/`，克隆后需 `pnpm install`（触发 `prepare`）或 `pnpm run build`。
+3. **`dsh plugin add` 会写 `$DSH_HOME/profiles/<name>/node_modules`**（工作区之外），并需要 `pnpm` 在 PATH 上——`dsh plugin` 是 pnpm 转发器，缺 pnpm 会返回 127。
+4. **本仓库的 `.npmrc` 把 pnpm 的 global/state/store 目录指向 `.pnpm-home/`**：这样 pnpm 的全部状态都留在工作区内，部署到 CI 或云 GPU 机器时可按需删除这几行。
+5. **测试用 worker_threads 池**：`vitest.config.ts` 里 `pool: 'threads'` 是为了绕开 Windows 上子进程池的 `spawn EPERM`；去掉它会在部分受限环境下失败。
+
+> 上述约束曾在一个受限文件策略的会话中被实测发现并记录（`npm install -g`、`dsh plugin add` 的符号链接、`pnpm test` 的子进程 spawn 都曾被拒）。
+> 当前会话的文件策略为 `danger-full-access`，这些操作均可正常执行；约束 1–5 是**工程事实**，与策略无关，保留备查。
 
 ## 文档
 

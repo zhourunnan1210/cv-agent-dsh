@@ -5,5 +5,6 @@ export default defineConfig({
     // 同上：避开受限策略下的子进程 spawn 限制。
     pool: 'threads',
     include: ['tests/**/*.test.ts'],
+    passWithNoTests: true,
   },
 })
