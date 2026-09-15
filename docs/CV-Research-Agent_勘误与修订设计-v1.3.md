@@ -53,6 +53,8 @@
 | E16 | （工程细节，两份文档均未涉及） | — | Cordis 插件装载有两个易错形态：① `dsh-system-prompt` 的 default 导出是**插件类**，必须直接传给 `ctx.plugin()`；拆成 `{ name, apply }` 普通对象会被拒绝（`invalid plugin ... received object`）；② 嵌套插件必须在父插件的 `apply` 内 **await**，否则子插件尚未激活就返回，外部读到的是 `undefined` | **L1**（两次失败实测） | 见 §5.3.1 |
 | E17 | （工程细节，未涉及） | — | **解构丢失 this 绑定**：`const { register } = ctx.tools; register(...)` 会让 `this.layers` 未定义（ToolRuntime 的 register 依赖实例字段）；必须保留 `ctx.tools.register(...)` 方法调用形态 | **L1**（三次失败实测后定位） | 见 §5.3.1 |
 | E18 | （工程细节，未涉及） | — | ① schemastery 默认值只在 Loader 按 Config schema 校验时注入；直接 `new` 构造时字段是 `undefined`，`JSON.stringify` 会**静默丢弃**（project_id 缺失被形状校验拦下）——构造器必须显式解析默认值；② loader 装载的行模块必须有 `default`（插件类）或命名 `apply` 导出，只有命名导出会被拒 | **L1**（隔离 profile 实机装载实测） | 见 §5.3.1 |
+| E19 | （工程细节，未涉及） | — | preset 组合里**不带 config 的行**，Loader 传入的 config 是 `undefined`，schemastery 的 `.default()` 在该路径**不生效**（mount-validate 报 `Cannot read properties of undefined (reading 'projectDir')`）——构造器必须 `config = {}` + `?.` 显式取默认值 | **L1**（mount-validate 实测） | 见 §5.3.2 |
+| E20 | §16.1 角色矩阵 / §4.1 | 隐含假设：主 Agent 的工具面可以由 preset 组合裁剪（排除 `read_*` 等重上下文工具） | **部分不成立**：dsh-ai4scholar 是 profile 的 bundle 层（宿主平面），其 38 个工具对**所有** preset 全局可见，preset 组合无法移除它们。`toolFilter` 只作用于委派的子代理（S1）；**主 Agent 自身的工具面限制机制待定**（`restrict()` 需 agent 自身 scope，preset 行拿不到） | L2 + L1 佐证 | 见 §5.3.2 第 5 条 |
 
 ---
 
@@ -516,6 +518,21 @@ await app.plugin({ name: 'host', async apply(ctx) { await ctx.plugin(child) } })
    （`invalid plugin ... received object`）。服务行加了 `export default` 后，
    隔离 profile 实机装载通过（§5.4 同款验证）。
 
+4. **不带 config 的行拿到 undefined（E19）**：`cv-research` preset 里的
+   `cvagent-state` 行没写 config（默认值本应生效），mount-validate 报
+   `Cannot read properties of undefined (reading 'projectDir')`。schemastery 的
+   `.default()` 只在 Loader 校验**非空**行配置时注入。修复：构造器
+   `config = {}` + `resolveStateConfig(config)` 纯函数显式落定默认值
+   （11/11 测试含回归用例）。
+
+5. **主 Agent 工具面限制的机制缺口（E20）**：写 `cv-research` preset 时发现，
+   dsh-ai4scholar 的 38 个工具注册在 profile 的 bundle 层（宿主平面），对**所有**
+   preset 全局可见——preset 组合无法为 Orchestrator 移除 `read_*`。
+   `toolFilter`（S1 已实证）只作用于**委派的子代理**；主 Agent 自身的工具面
+   是否可限制、用什么机制（`restrict()` 需要 agent 自身 scope，而 preset 行
+   挂在 standing scope 上），需要在 Phase 2 之前专项验证。Phase 1 空流水线
+   不受影响（不需要真实全文）。
+
 ### 5.4 bundle 装载的 L1 实证（替代了「必须重启宿主」）
 初稿把「新增 bundle 行在真实会话中生效」列为必须重启宿主才能验证的项目。**该结论已作废**：
 用一个**隔离的 `DSH_HOME`**（不改动运行中的宿主、不占用默认端口）即可完整验证装载链路。
@@ -598,10 +615,10 @@ v1.2 的 Phase 划分基本合理，但有三处需要调整：
 > | 交付物 | 状态 |
 > | --- | --- |
 > | `projectState` 服务（`cv-agent-dsh/state`） | ✅ 完成：文件持久化 + 门控语义封装 + 动态 prompt 章节（§4.5 落点） |
-> | 状态族 5 工具（`cv-agent-dsh/state-tools`） | ✅ 完成：真实 ToolRuntime 管线，10 条测试（含三模式空流水线验收） |
+> | 状态族 5 工具（`cv-agent-dsh/state-tools`） | ✅ 完成：真实 ToolRuntime 管线，11 条测试（含三模式空流水线验收与 E19 回归） |
 > | 隔离 profile 实机装载验证 | ✅ 通过：`cv-agent-dsh` 链入 profile，两行经 overlay 装载，进程启动无激活错误（E18-② 修复后） |
-> | cv-research agent preset（standard 裁剪 + isolate group） | ⏳ 下一步 |
-> | 空流水线演示（真实会话里三模式走通） | ⏳ 依赖 preset 与宿主重启 |
+> | cv-research agent preset（standard 裁剪 + isolate group） | ✅ 已产出：`~/.dsh/.agent-presets/cv-research/`（persona + `isolate: { projectState: true }` group + 两行）。mount-validate 已推进到「包已解析、行级错误已修复（E19）」；**最终 standingKeyFor 待宿主重启**——活进程缓存了修复前的模块 |
+> | 空流水线演示（真实会话里三模式走通） | ⏳ 依赖 preset 最终验证与宿主重启 |
 
 ---
 

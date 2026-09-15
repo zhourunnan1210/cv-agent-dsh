@@ -57,6 +57,23 @@ export const Config = Schema.object({
 
 type ResolvedConfig = Required<Config>
 
+/**
+ * 解析配置默认值（纯函数，便于测试）。
+ *
+ * E19（L1 实测）：preset 组合里的行不带 config 时，Loader 传入的 config 是
+ * `undefined`——schemastery 的 `.default()` 并不会在那条路径生效。所有默认值
+ * 必须在此显式落定，否则 `config.projectDir` 直接抛
+ * 「Cannot read properties of undefined」，或 project_id 被
+ * JSON.stringify 静默丢弃（E18-①）。
+ */
+export function resolveStateConfig(config: Config | undefined): ResolvedConfig {
+  return {
+    projectDir: config?.projectDir ?? 'data/projects/default',
+    stateFilename: config?.stateFilename ?? 'project_state.json',
+    projectId: config?.projectId ?? 'cv-research-project',
+  }
+}
+
 const MODE_LABEL: Readonly<Record<Mode, string>> = {
   confirm: 'A 确认模式（每阶段完成需先经 ask_user_question 取得用户确认，再用 cvagent_gate_resolve 落盘）',
   supervised: 'B 监督模式（自动流转，可随时中止/回退）',
@@ -114,17 +131,10 @@ export class ProjectStateService extends Service {
   private readonly config: ResolvedConfig
   private current: ProjectState | undefined
 
-  constructor(ctx: Context, config: Config) {
+  constructor(ctx: Context, config: Config = {}) {
     super(ctx, 'projectState')
-    // 显式解析默认值：`as ResolvedConfig` 的强转是谎言——schemastery 的默认值
-    // 只在 Loader 按 Config schema 校验时注入；直接构造（测试 / 宿主代码）
-    // 时 config.projectId 等字段是 undefined，JSON.stringify 会静默丢弃
-    // project_id（L1 实测：落盘状态缺 project_id 被形状校验拦下）。
-    this.config = {
-      projectDir: config.projectDir ?? 'data/projects/default',
-      stateFilename: config.stateFilename ?? 'project_state.json',
-      projectId: config.projectId ?? 'cv-research-project',
-    }
+    // 见 resolveStateConfig 的 E19 说明：默认值必须显式落定。
+    this.config = resolveStateConfig(config)
     this.store = createFileStateStore({
       projectDir: this.config.projectDir,
       stateFilename: this.config.stateFilename,

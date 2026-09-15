@@ -1,0 +1,2 @@
+name: CV Research Orchestrator
+description: 自主科研 Agent 平台主编排会话：大 Loop 状态机与 ABC 模式门控（cvagent_state_* / cvagent_mode_set / cvagent_gate_resolve），基于 standard 裁剪，附项目状态动态提示。

@@ -123,6 +123,23 @@ describe('cvagent 状态族工具（真实实现 + 真实管线）', () => {
     expect(await env.service.getState()).toBeUndefined()
   })
 
+  it('无 config 构造（preset 行不带 config 的场景）：默认值解析完整', async () => {
+    // E19 回归测试：preset 组合里 `- id: cvagent-state\n name: cv-agent-dsh/state`
+    // 不带 config 时，Loader 传入 undefined。resolveStateConfig 是构造器唯一
+    // 依赖的默认值来源，必须对 undefined 给出完整配置。
+    const { resolveStateConfig } = await import('../lib/state/service.js')
+    expect(resolveStateConfig(undefined)).toEqual({
+      projectDir: 'data/projects/default',
+      stateFilename: 'project_state.json',
+      projectId: 'cv-research-project',
+    })
+    // 部分配置只覆盖给定字段
+    expect(resolveStateConfig({ projectDir: dir })).toMatchObject({
+      projectDir: dir,
+      projectId: 'cv-research-project',
+    })
+  })
+
   it('advance 缺摘要 → 参数校验拦下并返回 isError', async () => {
     const result = await env.execute('cvagent_state_advance', {})
     expect(result.isError).toBe(true)
