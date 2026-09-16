@@ -149,6 +149,61 @@ describe('MineruClient（mock HTTP）', () => {
   })
 })
 
+describe('MineruQuotaService（宿主行封装）', () => {
+  let dir: string
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'mineru-quota-svc-'))
+  })
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('服务行挂载后可记账，状态跨实例持久化', async () => {
+    const { default: MineruQuotaService } = await import('../lib/kb/mineru-quota-service.js')
+    const DSH = 'C:/Users/Admin/AppData/Roaming/npm/node_modules/@deepseek-ai/dsh/node_modules/'
+    const { createRequire } = await import('node:module')
+    const { pathToFileURL } = await import('node:url')
+    const requireDsh = createRequire(DSH + '@deepseek-ai/cordis/package.json')
+    const cordis = await import(pathToFileURL(requireDsh.resolve('@deepseek-ai/cordis')).href)
+    const app = new cordis.Context()
+    let service
+    await app.plugin({
+      name: 'quota-host',
+      async apply(ctx) {
+        await ctx.plugin(MineruQuotaService, { ledgerPath: join(dir, 'quota.json') })
+      },
+    })
+    await app.plugin({
+      name: 'quota-probe',
+      inject: ['mineruQuota'],
+      apply(ctx) {
+        service = ctx.mineruQuota
+      },
+    })
+    const status = await service.record(123)
+    expect(status.usedPages).toBe(123)
+    // 第二次实例从同一文件读取
+    const app2 = new cordis.Context()
+    let service2
+    await app2.plugin({
+      name: 'quota-host-2',
+      async apply(ctx) {
+        await ctx.plugin(MineruQuotaService, { ledgerPath: join(dir, 'quota.json') })
+      },
+    })
+    await app2.plugin({
+      name: 'quota-probe-2',
+      inject: ['mineruQuota'],
+      apply(ctx) {
+        service2 = ctx.mineruQuota
+      },
+    })
+    expect((await service2.status()).usedPages).toBe(123)
+  })
+})
+
 describe('MineruQuotaLedger（真实文件）', () => {
   let dir: string
 

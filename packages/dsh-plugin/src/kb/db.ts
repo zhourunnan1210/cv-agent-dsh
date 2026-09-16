@@ -96,6 +96,14 @@ export const MIGRATIONS: readonly Migration[] = [
       );
     `,
   },
+  {
+    // 冻结后追加（纪律：只加新版本，不改 v1）：本地 PDF 路径——
+    // P2-5 落盘流水线要用它把 PDF 喂给 MinerU。
+    version: 2,
+    up: `
+      ALTER TABLE papers ADD COLUMN pdf_path TEXT;
+    `,
+  },
 ]
 
 /** papers 表与三库的 SQLite 行形态。 */
@@ -117,6 +125,7 @@ export interface PaperRow {
   parse_channel: 'mineru' | 'quick_read' | null
   extraction_quality: 'full_text' | 'abstract_only' | null
   md_path: string | null
+  pdf_path: string | null
   created_at: string
   updated_at: string
 }

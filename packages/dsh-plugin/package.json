@@ -32,6 +32,10 @@
       "types": "./lib/kb/tools.d.ts",
       "default": "./lib/kb/tools.js"
     },
+    "./mineru-quota": {
+      "types": "./lib/kb/mineru-quota-service.d.ts",
+      "default": "./lib/kb/mineru-quota-service.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [

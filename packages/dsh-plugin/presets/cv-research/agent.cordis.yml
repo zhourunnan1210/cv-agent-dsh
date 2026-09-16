@@ -72,6 +72,25 @@
     - id: tool-cvagent-state
       name: cv-agent-dsh/state-tools
 
+# ── cv-research knowledge base (isolate realm) ───────────────────────────────
+#
+# Same frozen decision (§4.4.1): `kb` is per-project private data — two sessions
+# can run two projects, so the paper library lives behind its own isolate realm.
+# Both the service row and its tool row share the group. MinerU's cross-project
+# quota ledger is deliberately NOT here: it lives in the host composition
+# (cordis.patch.yml of cv-agent-dsh).
+- id: cvagent-kb-group
+  name: cordis:group
+  group: true
+  isolate:
+    kb: true
+  config:
+    - id: cvagent-kb
+      name: cv-agent-dsh/kb
+
+    - id: tool-cvagent-kb
+      name: cv-agent-dsh/kb-tools
+
 # ── orchestrator execution-level guard (E20) ───────────────────────────────
 #
 # Provides no service — consumes the host `tools` event surface and the host

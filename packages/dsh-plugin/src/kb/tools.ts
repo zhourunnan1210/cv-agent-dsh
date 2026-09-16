@@ -47,6 +47,7 @@ export function apply(ctx: Context): void {
       url: { type: 'string', description: '论文页面 URL' },
       oa_pdf_url: { type: 'string', description: '开放获取 PDF URL' },
       abstract: { type: 'string', description: '摘要' },
+      pdf_path: { type: 'string', description: '本地 PDF 文件路径（落盘流水线用，可选）' },
       source_channel: {
         type: 'string',
         enum: ['asta', 'ai4scholar', 'manual'],
@@ -88,6 +89,7 @@ export function apply(ctx: Context): void {
         ...(args.url === undefined ? {} : { url: String(args.url) }),
         ...(args.oa_pdf_url === undefined ? {} : { oa_pdf_url: String(args.oa_pdf_url) }),
         ...(args.abstract === undefined ? {} : { abstract: String(args.abstract) }),
+        ...(args.pdf_path === undefined ? {} : { pdf_path: String(args.pdf_path) }),
         source_channel: (args.source_channel ?? 'asta') as PaperSourceChannel,
         pdf_status: (args.pdf_status ?? 'pending') as PaperPdfStatus,
         created_at: now,

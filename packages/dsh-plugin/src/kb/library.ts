@@ -52,6 +52,7 @@ function rowToRecord(row: PaperRow): PaperRecord {
     ...(row.parse_channel === null ? {} : { parse_channel: row.parse_channel }),
     ...(row.extraction_quality === null ? {} : { extraction_quality: row.extraction_quality }),
     ...(row.md_path === null ? {} : { md_path: row.md_path }),
+    ...(row.pdf_path === null ? {} : { pdf_path: row.pdf_path }),
     created_at: row.created_at,
     updated_at: row.updated_at,
   }
@@ -61,11 +62,11 @@ const UPSERT_SQL = `
   INSERT INTO papers (
     paper_id, title, authors, year, venue, citation_count, doi, arxiv_id, pmid,
     url, oa_pdf_url, abstract, source_channel, pdf_status, parse_channel,
-    extraction_quality, md_path, created_at, updated_at
+    extraction_quality, md_path, pdf_path, created_at, updated_at
   ) VALUES (
     @paper_id, @title, @authors, @year, @venue, @citation_count, @doi, @arxiv_id, @pmid,
     @url, @oa_pdf_url, @abstract, @source_channel, @pdf_status, @parse_channel,
-    @extraction_quality, @md_path, @created_at, @updated_at
+    @extraction_quality, @md_path, @pdf_path, @created_at, @updated_at
   )
 `
 
@@ -181,7 +182,7 @@ export class PaperLibrary {
           pmid = @pmid, url = @url, oa_pdf_url = @oa_pdf_url, abstract = @abstract,
           source_channel = @source_channel, pdf_status = @pdf_status,
           parse_channel = @parse_channel, extraction_quality = @extraction_quality,
-          md_path = @md_path, updated_at = @updated_at
+          md_path = @md_path, pdf_path = @pdf_path, updated_at = @updated_at
         WHERE paper_id = @paper_id
       `)
       .run(bindings)
@@ -207,6 +208,7 @@ export class PaperLibrary {
       parse_channel: record.parse_channel ?? null,
       extraction_quality: record.extraction_quality ?? null,
       md_path: record.md_path ?? null,
+      pdf_path: record.pdf_path ?? null,
       created_at: record.created_at,
       updated_at: record.updated_at,
     }

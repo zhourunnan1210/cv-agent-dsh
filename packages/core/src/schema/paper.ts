@@ -33,6 +33,8 @@ export interface PaperRecord {
   readonly extraction_quality?: PaperExtractionQuality
   /** markdown/ 下相对路径。 */
   readonly md_path?: string
+  /** 本地 PDF 文件路径（迁移 v2 追加；P2-5 落盘流水线用它喂 MinerU）。 */
+  readonly pdf_path?: string
   readonly created_at: string
   readonly updated_at: string
 }
@@ -152,6 +154,9 @@ export function mergePaperRecords(base: PaperRecord, incoming: PaperRecord): Pap
     ...(base.md_path !== undefined
       ? { md_path: base.md_path }
       : incoming.md_path !== undefined ? { md_path: incoming.md_path } : {}),
+    ...(base.pdf_path !== undefined
+      ? { pdf_path: base.pdf_path }
+      : incoming.pdf_path !== undefined ? { pdf_path: incoming.pdf_path } : {}),
     created_at: base.created_at,
     updated_at: incoming.updated_at,
   }

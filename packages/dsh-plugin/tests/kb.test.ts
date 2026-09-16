@@ -42,7 +42,7 @@ describe('PaperDatabase 迁移框架', () => {
 
   it('首次打开应用全部迁移并记录版本', () => {
     const db = new PaperDatabase(join(dir, 'metadata.db'))
-    expect(db.appliedMigrations()).toEqual([1])
+    expect(db.appliedMigrations()).toEqual([1, 2])
     db.close()
   })
 
@@ -50,7 +50,7 @@ describe('PaperDatabase 迁移框架', () => {
     const path = join(dir, 'metadata.db')
     new PaperDatabase(path).close()
     const db = new PaperDatabase(path)
-    expect(db.appliedMigrations()).toEqual([1])
+    expect(db.appliedMigrations()).toEqual([1, 2])
     db.close()
   })
 
@@ -147,6 +147,15 @@ describe('PaperLibrary upsert（§7.5.2 去重与合并）', () => {
     expect(outcome.merged_into).toBe('local:abc')
     expect(library.count()).toBe(1)
     expect(library.get('10.1000/other')).toBeUndefined()
+  })
+
+  it('迁移 v2 追加的 pdf_path 列可读写', () => {
+    library.upsert(makePaper({ pdf_path: 'C:/Zotero/storage/ABC/x.pdf' }))
+    const record = library.get('10.1000/example')
+    expect(record?.pdf_path).toBe('C:/Zotero/storage/ABC/x.pdf')
+    // 合并规则：既有 pdf_path 不被空值覆盖
+    library.upsert(makePaper({}))
+    expect(library.get('10.1000/example')?.pdf_path).toBe('C:/Zotero/storage/ABC/x.pdf')
   })
 
   it('get 按未归一化写法也能命中（归一化在入口处统一）', () => {
