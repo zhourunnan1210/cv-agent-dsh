@@ -74,7 +74,8 @@ interface ApiEnvelope {
     err_msg?: string
     full_zip_url?: string
     extract_progress?: { extracted_pages?: number; total_pages?: number }
-    results?: Array<{
+    /** 实测形状（2026-09-16）：批量结果字段名是 extract_result，不是 results。 */
+    extract_result?: Array<{
       file_name?: string
       state?: string
       err_msg?: string
@@ -174,7 +175,7 @@ export class MineruClient {
         ...(signal === undefined ? {} : { signal }),
       })
       const envelope = await readEnvelope(response, `extract-results/batch/${batchId}`)
-      const results = envelope.data?.results ?? []
+      const results = envelope.data?.extract_result ?? []
       const files: MineruFileResult[] = results.map((result) => ({
         fileName: result.file_name ?? '(unknown)',
         state: (result.state ?? 'pending') as MineruFileResult['state'],

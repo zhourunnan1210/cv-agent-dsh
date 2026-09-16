@@ -53,6 +53,20 @@ Agent API 留作"无 token 快速试一下"的备用。
 | 查单个任务 | `GET /api/v4/extract/task/{task_id}` | `200 {"code":-60012,"msg":"task not found or expire"}` |
 | 查批量结果 | `GET /api/v4/extract-results/batch/{batch_id}` | `200 -60012` |
 
+### 2.0 真实解析链路的形状订正（2026-09-16，scripts/parse-one.mjs 端到端实测）
+
+第一次端到端解析暴露两处与"空参数探测"不同的真实形状（已同步进 `MineruClient`）：
+
+| 端点 | 真实形状 |
+| --- | --- |
+| `POST /file-urls/batch` 成功响应 | `data.file_urls` 是 **URL 字符串数组**（与 files 顺序一致，24h 有效），不是对象数组；`data.batch_id` 为 batch 标识 |
+| `GET /extract-results/batch/{id}` | 结果字段名是 **`extract_result`**（不是 `results`）：`[{file_name, state, err_msg, full_zip_url}]`；轮询时认错字段名会永远等不到终态 |
+
+实测全链路（1 篇 15 页 arXiv 论文）：提交 → 上传 → 轮询 done → 解压 31 个产物
+（full.md + 图片 + json）→ 额度记账 +15 页。解析时长在分钟级（队列排队），
+轮询间隔 8s、超时 15min 合适；命令超时可换 `scripts/resume-batch.mjs`
+按 batch_id 续跑（不重复提交、不重复计费）。
+
 ### 2.2 Agent 轻量解析 API（免 Token）
 
 | 用途 | 路径 | 实测响应 |

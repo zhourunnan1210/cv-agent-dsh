@@ -3,6 +3,7 @@
  *
  * 不消耗真实解析额度：fetch 注入 mock。真实端点连通性由
  * tests/spike-mineru-api.mjs 覆盖（不创建任务的探测手法）。
+ * 字段名（file_urls: string[] / extract_result）按 2026-09-16 实测形状。
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { mkdtemp, readFile, rm, writeFile, readdir } from 'node:fs/promises'
@@ -10,7 +11,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { strToU8, zipSync } from 'fflate'
 
-import { MineruApiError, MineruClient } from '../lib/kb/mineru.js'
+import { MineruClient } from '../lib/kb/mineru.js'
 import { MineruQuotaLedger, MINERU_DAILY_PAGE_LIMIT } from '../lib/kb/mineru-quota.js'
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -101,21 +102,21 @@ describe('MineruClient（mock HTTP）', () => {
 
   it('pollBatch：running → done 两次响应收敛，返回终态与页数', async () => {
     const { impl } = makeMockFetch([
-      () => jsonResponse({ code: 0, data: { results: [{ file_name: 'a.pdf', state: 'running' }] } }),
+      () => jsonResponse({ code: 0, data: { extract_result: [{ file_name: 'a.pdf', state: 'running' }] } }),
       () => jsonResponse({
         code: 0,
-        data: { results: [{ file_name: 'a.pdf', state: 'done', full_zip_url: 'https://cdn.example/a.zip' }] },
+        data: { extract_result: [{ file_name: 'a.pdf', state: 'done', full_zip_url: 'https://cdn.example/a.zip' }] },
       }),
     ])
     const result = await client(impl, { pollIntervalMs: 5 }).pollBatch('b1')
     expect(result.batchId).toBe('b1')
     expect(result.files[0]).toMatchObject({ fileName: 'a.pdf', state: 'done' })
-    expect(result.pages).toBe(1) // 占位口径：每个 done 文件计 1 页（§mineru.ts 注释）
+    expect(result.pages).toBe(1) // 占位口径：每个 done 文件计 1 页（mineru.ts 注释）
   })
 
   it('pollBatch：failed 也是终态，透出 err_msg', async () => {
     const { impl } = makeMockFetch([
-      () => jsonResponse({ code: 0, data: { results: [{ file_name: 'a.pdf', state: 'failed', err_msg: '-60010 解析失败' }] } }),
+      () => jsonResponse({ code: 0, data: { extract_result: [{ file_name: 'a.pdf', state: 'failed', err_msg: '-60010 解析失败' }] } }),
     ])
     const result = await client(impl, { pollIntervalMs: 5 }).pollBatch('b1')
     expect(result.files[0]).toMatchObject({ state: 'failed', errMsg: '-60010 解析失败' })
@@ -123,9 +124,9 @@ describe('MineruClient（mock HTTP）', () => {
 
   it('pollBatch 超时 → 抛错', async () => {
     const { impl } = makeMockFetch([
-      () => jsonResponse({ code: 0, data: { results: [{ file_name: 'a.pdf', state: 'running' }] } }),
-      () => jsonResponse({ code: 0, data: { results: [{ file_name: 'a.pdf', state: 'running' }] } }),
-      () => jsonResponse({ code: 0, data: { results: [{ file_name: 'a.pdf', state: 'running' }] } }),
+      () => jsonResponse({ code: 0, data: { extract_result: [{ file_name: 'a.pdf', state: 'running' }] } }),
+      () => jsonResponse({ code: 0, data: { extract_result: [{ file_name: 'a.pdf', state: 'running' }] } }),
+      () => jsonResponse({ code: 0, data: { extract_result: [{ file_name: 'a.pdf', state: 'running' }] } }),
     ])
     await expect(client(impl, { pollIntervalMs: 5, pollTimeoutMs: 12 }).pollBatch('b1')).rejects.toThrow(/超时|超过/)
   })
