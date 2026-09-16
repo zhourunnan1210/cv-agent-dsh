@@ -24,6 +24,14 @@
       "types": "./lib/state/orchestrator-guard.d.ts",
       "default": "./lib/state/orchestrator-guard.js"
     },
+    "./kb": {
+      "types": "./lib/kb/service.d.ts",
+      "default": "./lib/kb/service.js"
+    },
+    "./kb-tools": {
+      "types": "./lib/kb/tools.d.ts",
+      "default": "./lib/kb/tools.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
