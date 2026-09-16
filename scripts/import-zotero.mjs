@@ -14,7 +14,7 @@
 
 import { copyFile, mkdir, readdir, rm } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { join, resolve, basename } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
 import { normalizePaperId } from '../packages/core/lib/index.js'
@@ -84,9 +84,40 @@ await mkdir(resolve('data/papers'), { recursive: true })
 const database = new PaperDatabase(METADATA_DB)
 const library = new PaperLibrary(database)
 
-const stats = { total: 0, byIdSource: { doi: 0, arxiv: 0, local: 0 }, inserted: 0, merged: 0, needsReview: 0, attachedLocal: 0, skippedDeleted: 0 }
+const stats = { total: 0, byIdSource: { doi: 0, arxiv: 0, local: 0 }, inserted: 0, merged: 0, needsReview: 0, attachedLocal: 0, skippedDeleted: 0, pathFixed: 0, pathMissing: 0 }
 const needsReview = []
 const now = new Date().toISOString()
+
+/**
+ * 磁盘实测校正（L1 教训）：部分 Zotero 附件的 `path` 是纯文件名
+ * （'storage:<file>.pdf'），真实文件却在 key 子目录（storage/<KEY>/<file>.pdf）里。
+ * 按 basename 建全量索引，直接拼接不存在时回退查找；索引一次建好复用。
+ */
+const pdfIndex = new Map()
+async function buildPdfIndex() {
+  const walk = async (dir) => {
+    let entries = []
+    try {
+      entries = await readdir(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      const full = join(dir, entry.name)
+      if (entry.isDirectory()) await walk(full)
+      else if (entry.name.toLowerCase().endsWith('.pdf')) pdfIndex.set(entry.name.toLowerCase(), full)
+    }
+  }
+  await walk(join(ZOTERO_DIR, 'storage'))
+}
+function resolvePdfPath(directPath) {
+  if (existsSync(directPath)) return { path: directPath, fixed: false, missing: false }
+  const byName = pdfIndex.get(basename(directPath).toLowerCase())
+  if (byName !== undefined) return { path: byName, fixed: true, missing: false }
+  return { path: directPath, fixed: false, missing: true }
+}
+
+await buildPdfIndex()
 
 for (const attachment of attachments) {
   stats.total += 1
@@ -108,7 +139,14 @@ for (const attachment of attachments) {
     .filter((name) => name !== '')
 
   const attachmentKey = String(attachment.path).replace(/^storage:/, '')
-  const pdfPath = join(ZOTERO_DIR, 'storage', attachmentKey)
+  const resolvedPdf = resolvePdfPath(join(ZOTERO_DIR, 'storage', attachmentKey))
+  if (resolvedPdf.missing) {
+    stats.pathMissing += 1
+    console.log(`⚠ pdf 文件在磁盘上找不到（跳过）：${attachmentKey}`)
+    continue
+  }
+  if (resolvedPdf.fixed) stats.pathFixed += 1
+  const pdfPath = resolvedPdf.path
 
   let paperId
   let idSource
@@ -164,6 +202,7 @@ console.log(`附件总数（pdf/storage）: ${stats.total}`)
 console.log(`跳过（父条目已删除）    : ${stats.skippedDeleted}`)
 console.log(`ID 来源  : doi=${stats.byIdSource.doi}, arxiv=${stats.byIdSource.arxiv}, local=${stats.byIdSource.local}`)
 console.log(`写入结果 : inserted=${stats.inserted}, merged=${stats.merged}, needs_review=${stats.needsReview}, 本地文件挂接=${stats.attachedLocal}`)
+console.log(`路径校正 : 磁盘实测命中 ${stats.pathFixed} 条，缺失 ${stats.pathMissing} 条`)
 console.log(`库内总数 : ${library.count()}`)
 console.log(`按通道    : ${JSON.stringify(library.countByChannel())}`)
 if (needsReview.length > 0) {

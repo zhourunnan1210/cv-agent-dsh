@@ -53,7 +53,7 @@ describe('MineruClient（mock HTTP）', () => {
       const pdfPath = join(dir, 'a.pdf')
       await writeFile(pdfPath, 'PDF-BYTES')
       const { impl, calls } = makeMockFetch([
-        () => jsonResponse({ code: 0, msg: 'ok', data: { batch_id: 'b1', file_urls: [{ file_name: 'a.pdf', url: 'https://upload.example/a' }] } }),
+        () => jsonResponse({ code: 0, msg: 'ok', data: { batch_id: 'b1', file_urls: ['https://upload.example/a'] } }),
         (req) => {
           expect(req.method).toBe('PUT')
           return new Response(null, { status: 200 })

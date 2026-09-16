@@ -68,7 +68,8 @@ interface ApiEnvelope {
   msg?: string
   data?: {
     batch_id?: string
-    file_urls?: Array<{ file_name?: string; url?: string }>
+    /** 实测形状（2026-09-16）：签名上传 URL 的字符串数组，与 files 顺序一致。 */
+    file_urls?: string[]
     state?: string
     err_msg?: string
     full_zip_url?: string
@@ -143,12 +144,12 @@ export class MineruClient {
       throw new MineruApiError(`file-urls/batch：响应缺 batch_id 或 file_urls 数量不符（${uploads.length}/${files.length}）`)
     }
     for (const [index, file] of files.entries()) {
-      const upload = uploads[index]
-      if (upload === undefined || upload.url === undefined) {
+      const uploadUrl = uploads[index]
+      if (uploadUrl === undefined || uploadUrl === '') {
         throw new MineruApiError(`file-urls/batch：第 ${index + 1} 个文件缺少签名上传链接`)
       }
       const bytes = await readFile(file.path)
-      const put = await this.fetchImpl(upload.url, {
+      const put = await this.fetchImpl(uploadUrl, {
         method: 'PUT',
         headers: { 'Content-Length': String(bytes.byteLength) },
         body: bytes,

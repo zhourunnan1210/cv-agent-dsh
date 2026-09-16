@@ -10,6 +10,7 @@ import {
   dedupeMatch,
   mergePaperRecords,
   normalizePaperId,
+  type PaperExtraction,
   type PaperRecord,
 } from '@cv-research/core'
 
@@ -32,9 +33,23 @@ export interface UpsertPaperOutcome {
   readonly needs_review: boolean
 }
 
+/** paper_extractions 表的 SQLite 行形态（JSON 列存字符串）。 */
+interface PaperExtractionRow {
+  paper_id: string
+  problem_statement: string
+  method_summary: string
+  innovations: string
+  future_work: string
+  limitations: string
+  benchmark: string
+  metrics: string
+  baseline_methods: string
+  extraction_quality: 'full_text' | 'abstract_only'
+  extracted_at: string
+}
+
 /** 行 ↔ 记录互转。 */
-function rowToRecord(row: PaperRow): PaperRecord {
-  return {
+function rowToRecord(row: PaperRow): PaperRecord {  return {
     paper_id: row.paper_id,
     title: row.title,
     authors: JSON.parse(row.authors) as string[],
@@ -164,6 +179,79 @@ export class PaperLibrary {
       .prepare('SELECT source_channel, COUNT(*) AS c FROM papers GROUP BY source_channel')
       .all() as Array<{ source_channel: string; c: number }>
     return Object.fromEntries(rows.map((row) => [row.source_channel, row.c]))
+  }
+
+  /**
+   * 保存一篇论文的结构化提取（P2-6，v1.2 §5.3）。
+   *
+   * - 同 paper_id 再提取 = 覆盖（提取结果是该论文的当前权威快照，不是历史日志；
+   *   需要历史时由会话日志承担）；
+   * - 同步把 papers.extraction_quality 镜像为本次提取的质量标记（§5.3 语义）。
+   */
+  saveExtraction(extraction: PaperExtraction): void {
+    this.db.raw
+      .prepare(`
+        INSERT INTO paper_extractions (
+          paper_id, problem_statement, method_summary, innovations, future_work,
+          limitations, benchmark, metrics, baseline_methods, extraction_quality, extracted_at
+        ) VALUES (
+          @paper_id, @problem_statement, @method_summary, @innovations, @future_work,
+          @limitations, @benchmark, @metrics, @baseline_methods, @extraction_quality, @extracted_at
+        )
+        ON CONFLICT(paper_id) DO UPDATE SET
+          problem_statement = excluded.problem_statement,
+          method_summary = excluded.method_summary,
+          innovations = excluded.innovations,
+          future_work = excluded.future_work,
+          limitations = excluded.limitations,
+          benchmark = excluded.benchmark,
+          metrics = excluded.metrics,
+          baseline_methods = excluded.baseline_methods,
+          extraction_quality = excluded.extraction_quality,
+          extracted_at = excluded.extracted_at
+      `)
+      .run({
+        paper_id: extraction.paper_id,
+        problem_statement: extraction.problem_statement,
+        method_summary: extraction.method_summary,
+        innovations: JSON.stringify(extraction.innovations),
+        future_work: JSON.stringify(extraction.future_work),
+        limitations: JSON.stringify(extraction.limitations),
+        benchmark: JSON.stringify(extraction.benchmarks),
+        metrics: JSON.stringify(extraction.metrics),
+        baseline_methods: JSON.stringify(extraction.baseline_methods),
+        extraction_quality: extraction.extraction_quality,
+        extracted_at: extraction.extracted_at,
+      })
+    this.db.raw
+      .prepare('UPDATE papers SET extraction_quality = ? WHERE paper_id = ?')
+      .run(extraction.extraction_quality, extraction.paper_id)
+  }
+
+  /** 读取一篇论文的提取结果；不存在返回 undefined。 */
+  getExtraction(paperId: string): PaperExtraction | undefined {
+    const row = this.db.raw
+      .prepare('SELECT * FROM paper_extractions WHERE paper_id = ?')
+      .get(paperId) as PaperExtractionRow | undefined
+    if (row === undefined) return undefined
+    return {
+      paper_id: row.paper_id,
+      problem_statement: row.problem_statement,
+      method_summary: row.method_summary,
+      innovations: JSON.parse(row.innovations) as string[],
+      future_work: JSON.parse(row.future_work) as string[],
+      limitations: JSON.parse(row.limitations) as string[],
+      benchmarks: JSON.parse(row.benchmark) as string[],
+      metrics: JSON.parse(row.metrics) as string[],
+      baseline_methods: JSON.parse(row.baseline_methods) as string[],
+      extraction_quality: row.extraction_quality,
+      extracted_at: row.extracted_at,
+    }
+  }
+
+  /** 已提取的论文数。 */
+  extractionCount(): number {
+    return (this.db.raw.prepare('SELECT COUNT(*) AS c FROM paper_extractions').get() as { c: number }).c
   }
 
   private insert(record: PaperRecord, paperId: string): void {

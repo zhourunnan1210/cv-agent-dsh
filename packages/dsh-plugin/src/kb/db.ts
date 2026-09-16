@@ -104,6 +104,25 @@ export const MIGRATIONS: readonly Migration[] = [
       ALTER TABLE papers ADD COLUMN pdf_path TEXT;
     `,
   },
+  {
+    // P2-6：Reader 结构化提取结果（v1.2 §5.3 十字段契约）。
+    version: 3,
+    up: `
+      CREATE TABLE paper_extractions (
+        paper_id          TEXT PRIMARY KEY,
+        problem_statement TEXT NOT NULL,
+        method_summary    TEXT NOT NULL,
+        innovations       TEXT NOT NULL DEFAULT '[]',
+        future_work       TEXT NOT NULL DEFAULT '[]',
+        limitations       TEXT NOT NULL DEFAULT '[]',
+        benchmark         TEXT NOT NULL DEFAULT '[]',
+        metrics           TEXT NOT NULL DEFAULT '[]',
+        baseline_methods  TEXT NOT NULL DEFAULT '[]',
+        extraction_quality TEXT NOT NULL,
+        extracted_at      TEXT NOT NULL
+      );
+    `,
+  },
 ]
 
 /** papers 表与三库的 SQLite 行形态。 */

@@ -42,7 +42,7 @@ describe('PaperDatabase 迁移框架', () => {
 
   it('首次打开应用全部迁移并记录版本', () => {
     const db = new PaperDatabase(join(dir, 'metadata.db'))
-    expect(db.appliedMigrations()).toEqual([1, 2])
+    expect(db.appliedMigrations()).toEqual([1, 2, 3])
     db.close()
   })
 
@@ -50,7 +50,7 @@ describe('PaperDatabase 迁移框架', () => {
     const path = join(dir, 'metadata.db')
     new PaperDatabase(path).close()
     const db = new PaperDatabase(path)
-    expect(db.appliedMigrations()).toEqual([1, 2])
+    expect(db.appliedMigrations()).toEqual([1, 2, 3])
     db.close()
   })
 
@@ -156,6 +156,32 @@ describe('PaperLibrary upsert（§7.5.2 去重与合并）', () => {
     // 合并规则：既有 pdf_path 不被空值覆盖
     library.upsert(makePaper({}))
     expect(library.get('10.1000/example')?.pdf_path).toBe('C:/Zotero/storage/ABC/x.pdf')
+  })
+
+  it('迁移 v3：提取结果保存/读取往返，并镜像 papers.extraction_quality', () => {
+    library.upsert(makePaper({}))
+    const extraction = {
+      paper_id: '10.1000/example',
+      problem_statement: '提升跨数据集泛化的 deepfake 检测',
+      method_summary: '多尺度空间-频率融合网络',
+      innovations: ['新融合模块'],
+      future_work: ['扩展到视频'],
+      limitations: ['算力开销大'],
+      benchmarks: ['FF++'],
+      metrics: ['AUC'],
+      baseline_methods: ['Xception'],
+      extraction_quality: 'full_text',
+      extracted_at: '2026-09-16T10:00:00Z',
+    }
+    library.saveExtraction(extraction)
+    expect(library.extractionCount()).toBe(1)
+    expect(library.getExtraction('10.1000/example')).toEqual(extraction)
+    expect(library.get('10.1000/example')?.extraction_quality).toBe('full_text')
+
+    // 覆盖语义：同 paper_id 再提取是当前权威快照
+    library.saveExtraction({ ...extraction, method_summary: '更新后的方法', extracted_at: '2026-09-16T11:00:00Z' })
+    expect(library.extractionCount()).toBe(1)
+    expect(library.getExtraction('10.1000/example')?.method_summary).toBe('更新后的方法')
   })
 
   it('get 按未归一化写法也能命中（归一化在入口处统一）', () => {
