@@ -18,6 +18,7 @@
 | --- | --- |
 | persona | 换成 CV Research Orchestrator 人设（保持精简；阶段/模式/门控的实时上下文由 `cv-agent-dsh/state` 的动态 prompt 章节注入，勘误 §4.5） |
 | 新增 group | `cvagent-state-group`：`isolate: { projectState: true }`，内含 `cv-agent-dsh/state`（服务）与 `cv-agent-dsh/state-tools`（工具行）——服务平面归属按勘误 §4.4.1 裁定 |
+| 新增 group | `cvagent-kb-group`：`isolate: { kb: true }`，内含 `cv-agent-dsh/kb`（论文库服务）、`cv-agent-dsh/kb-tools`（`cvagent_kb_import_paper`）与 `cv-agent-dsh/kb-extract`（`cvagent_kb_extract`，Reader 子代理委派提取） |
 | 新增行 | `cvagent-orchestrator-guard`（E20 执行级护栏，置 isolate group 之外——它不提供服务） |
 | 新增行 | `mcp-asta`：Asta MCP 学术检索（`@deepseek-ai/dsh-mcp-client`，工具名 `mcp__asta__*`） |
 | 其余 | 与 standard 完全一致（编码工具、委派、skills、目标等全部保留） |

@@ -16,7 +16,7 @@ import { Service } from '@deepseek-ai/cordis'
 import type { Context } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 
-import type { PaperRecord } from '@cv-research/core'
+import type { PaperExtraction, PaperRecord } from '@cv-research/core'
 
 import { PaperDatabase } from './db.js'
 import { PaperLibrary } from './library.js'
@@ -58,6 +58,9 @@ export interface KbApi {
   getPaper(paperId: string): PaperRecord | undefined
   count(): number
   countByChannel(): Record<string, number>
+  saveExtraction(extraction: PaperExtraction): void
+  getExtraction(paperId: string): PaperExtraction | undefined
+  extractionCount(): number
 }
 
 export class KbService extends Service implements KbApi {
@@ -87,6 +90,18 @@ export class KbService extends Service implements KbApi {
 
   countByChannel(): Record<string, number> {
     return this.library.countByChannel()
+  }
+
+  saveExtraction(extraction: PaperExtraction): void {
+    this.library.saveExtraction(extraction)
+  }
+
+  getExtraction(paperId: string): PaperExtraction | undefined {
+    return this.library.getExtraction(paperId)
+  }
+
+  extractionCount(): number {
+    return this.library.extractionCount()
   }
 
   /** 关闭数据库（unload / 测试用；Cordis 卸载时由 effect 处置）。 */

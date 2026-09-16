@@ -91,6 +91,12 @@
     - id: tool-cvagent-kb
       name: cv-agent-dsh/kb-tools
 
+    # P2-6b: cvagent_kb_extract — Reader 子代理委派工具。inject kb + 宿主
+    # `tools`，必须与 kb 服务同组（isolate realm）才能解析本项目实例；
+    # 子代理经 spawn + toolFilter {read} 做上下文隔离的全文结构化提取。
+    - id: tool-cvagent-kb-extract
+      name: cv-agent-dsh/kb-extract
+
 # ── orchestrator execution-level guard (E20) ───────────────────────────────
 #
 # Provides no service — consumes the host `tools` event surface and the host

@@ -724,7 +724,7 @@ Domain Pack 的 `ext` JSON 列，不冻结）：
 | P2-3 | MinerU API 端点 + key 环境变量名 + 限流参数 | ✅ 已完成：`docs/mineru-api.md`（端点全部实测、`MINERU_TOKEN` 在 `.env.local` 已验、官方限流与上传优先链路）——P2-4 直接按它实现 | 我 |
 | P2-4 | 论文库落盘流水线：`metadata.db` 初始化、`cvagent_kb_import_paper`、MinerU API 适配器（异步任务 + 轮询） | ✅ 实现 + 接线 + **重启后验证通过**：kb 组经 `standingKeyFor('cv-research')` 挂载成功；mineru-quota 行在宿主组合树中就位 | 我 |
 | P2-5 | Scout 检索（asta 主通道 + dsh-ai4scholar 备选）与去重合并 | ✅ 本地导入 + Asta 富化完成：147 条入库，**145/147 有外部 ID**（DOI 134 / arXiv 61）；2 条无结果留待人工。`scripts/import-zotero.mjs`（幂等）+ `scripts/enrich-asta.mjs`（标题归一化相等才合并、1s 节流）。**L1 新坑**：asta `search_paper_by_title` 的 `fields` 带 `abstract` 会让服务端挂起（MCP -32001 超时），只用 `title,year,venue,externalIds`；返回形状为 `value.content[0].text` 内嵌 JSON | 我 |
-| P2-6 | Reader 结构化提取（走 outputSchema 的子代理）与 Analyst 三库更新 | 🔄 进行中：**全链路试点打通**（1 篇 15 页 arXiv 论文）——Zotero PDF → MinerU 解析（31 个产物、额度记账 +15 页）→ Reader 十字段提取（core `PaperExtraction` 契约 + 迁移 v3 `paper_extractions` 表 + `saveExtraction`，papers.extraction_quality 镜像）。待续：Reader 子代理 outputSchema 工具化 + Analyst 三库条目生成 + 批量解析 | 我 |
+| P2-6 | Reader 结构化提取（走 outputSchema 的子代理）与 Analyst 三库更新 | ✅ Reader 侧完成：`cvagent_kb_extract` 工具化（`kb/extract-tool.ts`）——spawn Reader 子代理（toolFilter `{read}`、`READER_PERSONA`、outputSchema=PaperExtraction 编译、maxDepth 0），结构化结果 `coerceExtraction` 校验后 `kb.saveExtraction` 落库；`kb` 服务开放 `saveExtraction/getExtraction/extractionCount`；preset kb 组加 `cv-agent-dsh/kb-extract` 行并同步工作副本；kb-extract 测试 6 个全绿（dsh-plugin 65）。**Analyst 三库条目生成留待 P2-7 实践后按需补**（提取 → 三库映射在 §5.3 有语义定义，未冻结为工具） | 我 |
 | P2-7 | Phase 2 验收：从 0 检索某 Deepfake 子主题 → ≥100 篇论文库与三库，抽检 20 篇 | P2-5/6 | 我 |
 
 > P2-0 是 Phase 2 的**启动闸门**（v1.2 §14 的截止项）。P2-1/2/3 是外部事实，
