@@ -911,6 +911,50 @@ Phase 2 留下的最大缺口是「243 篇 Asta 论文只有元数据」。已�
 
 ---
 
+## 10. P3-2 Domain Pack（草案已生成，**待人工评审冻结**）
+
+pack 承载一切「随细分领域变化」的东西（v1.2 §3.4/§18）：扩展字段、术语词典、
+benchmark 清单、打分权重。它在 Phase 3 里的地位是**闸门**——`FrozenDomainPack.scoring`
+是 idea 打分的权重来源，而冻结按设计**必须带人工评审签名**（`freezeDomainPack` 在签名为空时
+直接抛错，类型级强制「空签名 = 跳过评审」）。
+
+### 10.1 已交付
+
+| 交付物 | 内容 |
+| --- | --- |
+| `scripts/bootstrap-pack.mjs` | 从 `metadata.db` **实测派生**草案：`schema_ext` ← 三库条目真实用过的 ext 键与取值分布；`benchmarks`/`metrics` ← 21 篇提取的频次（含数据集别名归一、指标同义词归一、通用视觉数据集排除）；`lexicon` ← 领域规范术语 + 检索改写组；`scoring` ← v1.2 §18.4 的 Deepfake 默认权重 |
+| `data/packs/deepfake-detection-0.1.draft.json` | 草案（含 `provenance` 段：全部派生统计，供评审人核对） |
+| `scripts/review-pack.mjs` | 评审视图（逐节打印要点，不必读 700 行 JSON） |
+| `scripts/freeze-pack.mjs` | **冻结门**：契约校验（字段类型/enum 有值/权重合计 100/档位连续且覆盖 0–100）→ 强制 `--reviewer` 签名 → 写冻结产物 + 记 `domain_packs` 注册表 +（可选）`project_pack_binding` 绑定；**已冻结版本拒绝覆盖**（改 pack 必须升版本） |
+
+### 10.2 草案要点（2026-09-17 状态）
+
+- **pack**：`deepfake-detection@0.1`，种子论文 20 篇（已解析语料）
+- **schema_ext**：problems 3 字段（`detection_target` text、`modality` enum[6]、`benchmarks` text）、
+  methods 4 字段（`paradigm` enum[11]、`backbone` text、`training_strategy` enum[7]、`generalization_target` enum[5]）、
+  innovations 1 字段（`innovation_type` enum[7]）。enum 取值 = **语料实测值 ∪ 领域标准词表**（统一 snake_case），
+  避免「没人填过但显然该允许」的值被挡在外面
+- **benchmarks 18 个**：识别出的规范数据集**一律纳入**（含语料里只出现 1 次的音视频集
+  LAV-DF/AV-Deepfake1M/KoDF/FakeAVCeleb——按频次卡掉会让 pack 丢掉整个音频分支）；
+  未识别的自由文本名要求 ≥2 篇提及；通用视觉数据集（ImageNet/COCO/ADE20K）与音视频**预训练语料**
+  （VoxCeleb2/LRS2）排除并留痕
+- **metrics 9 个**：AUC / ACC / AP / F1 / EER / Precision / Recall / FLOPs / Params（同义词已归一）
+- **protocols 4 条**：in_domain / cross_dataset / cross_manipulation / cross_model
+- **lexicon**：15 术语 + 8 检索改写组
+- **scoring**：`30/30/25/15`（novelty_problem / novelty_method / novelty_combo / feasibility），
+  `high_risk_similarity=0.85`、`topk=10`，档位 `proceed [75,100] / revise [50,74] / abandon [0,49]`
+
+### 10.3 冻结命令（评审通过后执行）
+
+```bash
+node scripts/freeze-pack.mjs --reviewer "<评审人标识>" --bind
+```
+
+> 冻结前请重点看三处：**enum 词表**（它决定未来 Analyst 抽取的取值空间）、
+> **benchmarks 纳入/排除清单**（`provenance` 里两组都在）、**权重与档位**（决定 idea 打分口径）。
+
+---
+
 ## 附录 A：本次已落地的仓库产物
 
 ```
