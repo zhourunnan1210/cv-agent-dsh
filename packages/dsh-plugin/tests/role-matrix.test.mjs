@@ -17,12 +17,29 @@
  * `tests/spike-s1-tool-isolation.mjs` 验证的是**隔离原语是否有效**（机制）；
  * 本测试验证的是**我们的角色矩阵是否正确**（设计）。前者是 dsh 的性质，
  * 后者是我们的责任。
+ *
+ * ## 2026-09-16：检索面从 dsh-ai4scholar 换成 Asta MCP
+ *
+ * 旧版本从 vendored 的 dsh-ai4scholar 里取出它真实注册的 38 个工具来铺工具面。
+ * 该 bundle 已停用，工具面改为 8 个 Asta MCP 工具（`mcp__asta__*`）+ 21 个
+ * `cvagent_*` 工具。两处**能力损失**已落到矩阵里，不是笔误：
+ *
+ * - **Reader 失去全文读取**：Asta 没有 `read_*`，Reader 暂时只能用
+ *   `get_paper` + `snippet_search` 近似替代（见 `names.ts` 的
+ *   `READER_ALLOWED_TOOLS`），真正的全文阅读等 MinerU 落地。
+ * - **Writing 失去 `auto_cite` 与 `sci_draw`**：两者都随 ai4scholar 一并移除，
+ *   Writing 现在只剩 `cvagent_write_draft`。需要时须单独引入替代品。
  */
 import { createRequire } from 'node:module'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { pathToFileURL } from 'node:url'
 import { strict as assert } from 'node:assert'
 
-import { CVAGENT_TOOL_FAMILIES, SCOUT_ALLOWED_TOOLS, VENDOR_TOOL_NAMES } from '../lib/tools/names.js'
+import {
+  ASTA_TOOL_NAMES,
+  CVAGENT_TOOL_FAMILIES,
+  READER_ALLOWED_TOOLS,
+  SCOUT_ALLOWED_TOOLS,
+} from '../lib/tools/names.js'
 
 const DSH = 'C:/Users/Admin/AppData/Roaming/npm/node_modules/@deepseek-ai/dsh/node_modules/'
 
@@ -36,11 +53,6 @@ const systemPromptModule = await loadDsh('@deepseek-ai/dsh-system-prompt')
 const scopeModule = await loadDsh('@deepseek-ai/dsh-scope')
 const cordis = await loadDsh('@deepseek-ai/cordis')
 
-const requireVendor = createRequire(
-  fileURLToPath(new URL('../../vendor/dsh-ai4scholar/package.json', import.meta.url)),
-)
-const vendor = await import(pathToFileURL(requireVendor.resolve('dsh-ai4scholar')).href)
-
 /**
  * 角色矩阵（勘误 §4.2）。
  *
@@ -48,43 +60,52 @@ const vendor = await import(pathToFileURL(requireVendor.resolve('dsh-ai4scholar'
  * 目前只有主 Agent 是这种情况，因为它的边界由 preset 决定。
  */
 const ROLE_MATRIX = {
-  /** 主 Agent：无 kb.extract、无实验执行工具；边界由 preset 提供。 */
+  /** 主 Agent：边界由 preset + E20 执行级护栏提供，不靠 toolFilter。 */
   orchestrator: {
     allow: null,
-    // 注意：这里**不**用 mustNotSee 断言 read_* 缺席。
-    // 主 Agent 的边界由 preset 的工具面决定（§4.1），而不是 toolFilter ——
-    // 它自己就是根作用域，无法对自己施加 scope 限制（restrict() 会抛错）。
-    // 断言 read_* 缺席属于 preset 的验收项，见下方专项检查。
+    // 注意：这里**不**用 mustNotSee 断言重上下文工具缺席。
+    // 主 Agent 是根作用域，无法对自己施加 scope 限制（restrict() 会抛错）。
+    // 它的重上下文边界由 cv-agent-dsh/orchestrator-guard 在执行级落实（E20），
+    // 属于 preset 的验收项，见下方专项检查。
     mustNotSee: [],
-    rationale: '§4.1：边界由 preset 提供，非 toolFilter',
+    rationale: '§4.1：边界由 preset + E20 护栏提供，非 toolFilter',
   },
   /** Scout：只做检索与去重，回传候选列表。 */
   scout: {
     allow: [...SCOUT_ALLOWED_TOOLS],
-    mustNotSee: [VENDOR_TOOL_NAMES.autoCite, VENDOR_TOOL_NAMES.sciDraw, VENDOR_TOOL_NAMES.readSemanticPaper],
-    rationale: '§5.1：只返回候选列表，不返回全文',
+    mustNotSee: [ASTA_TOOL_NAMES.snippetSearch],
+    rationale: '§5.1：只返回候选列表，不返回正文',
   },
-  /** Reader：只读单篇全文，不检索。 */
+  /** Reader：围绕单篇取证，不检索。 */
   reader: {
-    allow: [VENDOR_TOOL_NAMES.readSemanticPaper, VENDOR_TOOL_NAMES.readArxivPaper, VENDOR_TOOL_NAMES.readByDoi],
-    mustNotSee: [VENDOR_TOOL_NAMES.searchPapers, VENDOR_TOOL_NAMES.matchPaper, VENDOR_TOOL_NAMES.autoCite],
-    rationale: '§5.3：一次仅加载单篇论文',
+    allow: [...READER_ALLOWED_TOOLS],
+    mustNotSee: [
+      ASTA_TOOL_NAMES.searchByRelevance,
+      ASTA_TOOL_NAMES.searchByTitle,
+      ASTA_TOOL_NAMES.citations,
+      ASTA_TOOL_NAMES.authorPapers,
+    ],
+    rationale: '§5.3：一次仅处理单篇（全文待 MinerU）',
   },
-  /** Analyst：只写三库，不检索也不读全文。 */
+  /** Analyst：只写三库，不检索也不取证。 */
   analyst: {
     allow: [...CVAGENT_TOOL_FAMILIES.kb],
-    mustNotSee: [VENDOR_TOOL_NAMES.searchPapers, VENDOR_TOOL_NAMES.readSemanticPaper, VENDOR_TOOL_NAMES.autoCite],
+    mustNotSee: [ASTA_TOOL_NAMES.searchByRelevance, ASTA_TOOL_NAMES.getPaper, ASTA_TOOL_NAMES.snippetSearch],
     rationale: '§5.4：三库去重合并判断',
   },
   /** Writing：不接触检索与实验中间文件，只用写作工具。 */
   writing: {
-    allow: [VENDOR_TOOL_NAMES.autoCite, VENDOR_TOOL_NAMES.sciDraw, ...CVAGENT_TOOL_FAMILIES.idea.filter((n) => n.includes('write'))],
-    mustNotSee: [VENDOR_TOOL_NAMES.searchPapers, VENDOR_TOOL_NAMES.readSemanticPaper, VENDOR_TOOL_NAMES.matchPaper],
-    rationale: '§8.2：只加载材料包与写作模板',
+    allow: [...CVAGENT_TOOL_FAMILIES.idea.filter((n) => n.includes('write'))],
+    mustNotSee: [
+      ASTA_TOOL_NAMES.searchByRelevance,
+      ASTA_TOOL_NAMES.snippetSearch,
+      ASTA_TOOL_NAMES.getPaper,
+    ],
+    rationale: '§8.2：只加载材料包与写作模板（auto_cite/sci_draw 已随 ai4scholar 移除）',
   },
 }
 
-// ── 装配：真实 ToolRuntime + 真实 vendored 工具面 ──────────────────────────
+// ── 装配：真实 ToolRuntime + 同名的桩工具面 ────────────────────────────────
 function asPlugin(module) {
   if (typeof module.apply === 'function') {
     return {
@@ -106,24 +127,6 @@ function makeTool(name) {
   })
 }
 
-/** 取出 vendored 插件真实注册的 38 个工具定义。 */
-function vendoredDefinitions() {
-  const collected = []
-  vendor.apply(
-    {
-      tools: { register: (definition) => (collected.push(definition), () => {}) },
-      systemPrompt: { section: () => () => {} },
-      commands: { register: () => () => {} },
-      credentials: { resolve: () => undefined },
-      inject: (_names, callback) => void callback,
-      effect: () => () => {},
-      get: () => undefined,
-    },
-    typeof vendor.Config === 'function' ? vendor.Config({}) : {},
-  )
-  return collected
-}
-
 const app = new cordis.Context()
 let runtime
 await app.plugin({
@@ -140,16 +143,16 @@ await app.plugin({
   },
 })
 
-// 模型可见的初始面 = 38 个 vendored 工具 + 21 个 cvagent 工具。
-const vendored = vendoredDefinitions()
-for (const definition of vendored) runtime.register(definition)
+// 模型可见的初始面 = 8 个 Asta 工具 + 21 个 cvagent 工具。
+const astaNames = Object.values(ASTA_TOOL_NAMES)
+for (const name of astaNames) runtime.register(makeTool(name))
 
 const { ALL_CVAGENT_TOOLS } = await import('../lib/tools/names.js')
 for (const name of ALL_CVAGENT_TOOLS) runtime.register(makeTool(name))
 
 const fullSurface = runtime.schemas().map((s) => s.name).sort()
-console.log(`初始工具面: ${fullSurface.length} 个（38 vendored + 21 cvagent）`)
-assert.equal(fullSurface.length, 38 + ALL_CVAGENT_TOOLS.length)
+console.log(`初始工具面: ${fullSurface.length} 个（${astaNames.length} Asta + ${ALL_CVAGENT_TOOLS.length} cvagent）`)
+assert.equal(fullSurface.length, astaNames.length + ALL_CVAGENT_TOOLS.length)
 
 // ── 逐角色展开并断言 ───────────────────────────────────────────────────────
 const results = {}
@@ -199,21 +202,23 @@ for (const [role, spec] of Object.entries(ROLE_MATRIX)) {
   }
 }
 
-// ── §1.3 原则四的专项断言：主 Agent 的边界由 preset 而非 toolFilter 落实 ──
+// ── §1.3 原则四的专项断言：主 Agent 的边界由 preset + E20 护栏落实 ─────────
 //
 // 这是 §4.1 分层设计的直接验证：主 Agent 是根作用域，无法对自己施加 scope
-// 限制；尝试施加会被拒绝。因此「主 Agent 不加载全文」只能、也必须由
-// cv-research preset 的工具面来保证。
-const reads = results.orchestrator.filter((n) => n.startsWith('read_'))
+// 限制；尝试施加会被拒绝。因此「主 Agent 不加载全文/正文片段」只能、也必须
+// 由两件事共同保证：cv-research preset 提供的工具面，以及 orchestrator-guard
+// 在 `tools/pre-execute` 上的执行级拒绝（E20）。
+const heavy = results.orchestrator.filter((n) => n === ASTA_TOOL_NAMES.snippetSearch)
 console.log('')
-console.log(`主 Agent 目录中的 read_* 工具: ${reads.length === 0 ? '(无)' : reads.join(', ')}（共 ${reads.length} 个）`)
+console.log(`主 Agent 目录中的重上下文工具: ${heavy.length === 0 ? '(无)' : heavy.join(', ')}`)
+console.log('   → Asta 没有 read_*/download_*；唯一的重量级工具是 snippet_search，')
+console.log('     它的拦截由 E20 护栏在执行级完成，不由 toolFilter 完成。')
 
 assert.throws(
-  () => runtime.restrict({ deny: [VENDOR_TOOL_NAMES.readSemanticPaper] }),
+  () => runtime.restrict({ deny: [ASTA_TOOL_NAMES.snippetSearch] }),
   /requires a scoped context/,
   '根作用域不得施加限制',
 )
-console.log('✅ 主 Agent 无法用 toolFilter 约束自己 —— 边界只能由 preset 落实（§4.1）')
-console.log('   → preset 验收项：cv-research preset 的工具面中不得出现 read_*/download_*')
+console.log('✅ 主 Agent 无法用 toolFilter 约束自己 —— 边界只能由 preset + 护栏落实（§4.1 / E20）')
 
 console.log('\nROLE MATRIX SPEC OK —— §16.1 角色矩阵与真实运行时一致')

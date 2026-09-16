@@ -7,12 +7,22 @@
  * - 子代理（不在 roots 里）调用被禁工具 → 正常执行（子代理归 toolFilter 管）；
  * - 无 agent 的调用（agentless）→ 护栏不生效（fail-open）；
  * - 自定义 deny 名单覆盖默认名单。
+ *
+ * 2026-09-16：默认名单随检索后端换成 Asta 而重写。旧名单是 dsh-ai4scholar 的
+ * 5 个 `read_*` + 5 个 `download_*`，而 Asta 里这两个前缀**一个都不存在**；
+ * 现在唯一被禁的是全族最重的 `snippet_search`。
  */
 import { describe, expect, it } from 'vitest'
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
 
+import { ASTA_TOOL_NAMES, ORCHESTRATOR_DENY_TOOLS } from '../lib/tools/names.js'
 import * as guard from '../lib/state/orchestrator-guard.js'
+
+/** 默认被禁的工具（根 agent 不得调用）。 */
+const DENIED = ASTA_TOOL_NAMES.snippetSearch
+/** 默认放行的工具（护栏不应误伤）。 */
+const ALLOWED = ASTA_TOOL_NAMES.searchByRelevance
 
 const DSH = 'C:/Users/Admin/AppData/Roaming/npm/node_modules/@deepseek-ai/dsh/node_modules/'
 function loadDsh(spec) {
@@ -55,8 +65,8 @@ async function makeEnv(config) {
     },
   })
   // 直接在真实 runtime 上注册测试工具（全局层）
-  runtime.register(makeTool('read_semantic_paper'))
-  runtime.register(makeTool('search_papers'))
+  runtime.register(makeTool(DENIED))
+  runtime.register(makeTool(ALLOWED))
   // 护栏：直接 apply 到真实 cordis ctx（真实事件注册）
   await app.plugin({
     name: 'cvagent-orchestrator-guard',
@@ -81,47 +91,49 @@ describe('主编排会话执行级护栏（E20）', () => {
 
   it('根 agent 调用被禁工具 → deny，isError 且理由可读', async () => {
     env = await makeEnv(undefined)
-    const result = await env.execute('read_semantic_paper', ROOT)
+    const result = await env.execute(DENIED, ROOT)
     expect(result.isError).toBe(true)
-    expect(JSON.stringify(result.content)).toMatch(/主编排会话禁用重上下文工具 read_semantic_paper/)
+    expect(JSON.stringify(result.content)).toContain(`主编排会话禁用重上下文工具 ${DENIED}`)
     expect(JSON.stringify(result.content)).toMatch(/原则四/)
   })
 
   it('根 agent 调用未禁工具 → 正常执行', async () => {
     env = await makeEnv(undefined)
-    const result = await env.execute('search_papers', ROOT)
+    const result = await env.execute(ALLOWED, ROOT)
     expect(result.isError).toBe(false)
-    expect(result.value).toBe('search_papers ran')
+    expect(result.value).toBe(`${ALLOWED} ran`)
   })
 
   it('子代理调用被禁工具 → 正常执行（子代理归 toolFilter 管）', async () => {
     env = await makeEnv(undefined)
-    const result = await env.execute('read_semantic_paper', CHILD)
+    const result = await env.execute(DENIED, CHILD)
     expect(result.isError).toBe(false)
-    expect(result.value).toBe('read_semantic_paper ran')
+    expect(result.value).toBe(`${DENIED} ran`)
   })
 
   it('无 agent 的调用 → 护栏不生效（fail-open）', async () => {
     env = await makeEnv(undefined)
-    const result = await env.execute('read_semantic_paper', undefined)
+    const result = await env.execute(DENIED, undefined)
     expect(result.isError).toBe(false)
   })
 
   it('自定义 deny 名单覆盖默认名单', async () => {
-    env = await makeEnv({ denyForRoot: ['search_papers'] })
-    const denied = await env.execute('search_papers', ROOT)
+    env = await makeEnv({ denyForRoot: [ALLOWED] })
+    const denied = await env.execute(ALLOWED, ROOT)
     expect(denied.isError).toBe(true)
-    expect(JSON.stringify(denied.content)).toMatch(/search_papers/)
-    // 默认名单里的 read_semantic_paper 不在自定义名单中 → 放行
-    const allowed = await env.execute('read_semantic_paper', ROOT)
+    expect(JSON.stringify(denied.content)).toContain(ALLOWED)
+    // 默认名单里的 snippet_search 不在自定义名单中 → 放行
+    const allowed = await env.execute(DENIED, ROOT)
     expect(allowed.isError).toBe(false)
   })
 
-  it('默认名单包含 5 个 read_* 与 5 个 download_*', async () => {
-    const { ORCHESTRATOR_DENY_TOOLS } = await import('../lib/tools/names.js')
-    const reads = ORCHESTRATOR_DENY_TOOLS.filter((n) => n.startsWith('read_'))
-    const downloads = ORCHESTRATOR_DENY_TOOLS.filter((n) => n.startsWith('download_'))
-    expect(reads).toHaveLength(5)
-    expect(downloads).toHaveLength(5)
+  it('默认名单只含 Asta 契约里的重量级工具', () => {
+    expect([...ORCHESTRATOR_DENY_TOOLS]).toEqual([ASTA_TOOL_NAMES.snippetSearch])
+    // 名单必须是契约子集：拼错或引用已下线的名字会让护栏静默失效，
+    // 而"静默失效"正是本项目最不能接受的一类缺陷。
+    const contract = new Set(Object.values(ASTA_TOOL_NAMES))
+    for (const name of ORCHESTRATOR_DENY_TOOLS) {
+      expect(contract.has(name)).toBe(true)
+    }
   })
 })

@@ -542,6 +542,45 @@ await app.plugin({ name: 'host', async apply(ctx) { await ctx.plugin(child) } })
      隐藏需 dsh 提供 setup 扩展点，留待后续版本。护栏行不提供服务，故放在
      isolate group 之外（与 standard 的 tool 行同规则）。
 
+6. **E22（L1）：`!!js` 求值出 `undefined` 会让整行校验失败，拖垮整个 preset 挂载
+   ——而报错信息会把人引向错误的方向。**
+
+   `cv-research` preset 的 `mcp-asta` 行**首次真机挂载即失败**，切到该 preset 直接报
+   「无法切换到『CV Research Orchestrator』」。报错原文（节选）：
+
+   ```
+   failed to apply loader entry mcp-asta (@deepseek-ai/dsh-mcp-client): invalid config:
+     - expected { transport: "streamable-http", ..., headers: { [key: string]: string }, ... }
+     but got {"serverName":"asta","transport":"streamable-http","url":"...","headers":{}}
+   ```
+
+   **误导点**：错误里显示 `headers: {}`——但用**真实 Config schema** 逐形态实测：
+
+   | headers 形态 | 结果 |
+   | --- | --- |
+   | `{}` | **通过** |
+   | `{ 'x-api-key': '' }` | **通过** |
+   | `{ 'x-api-key': undefined }` | **拒绝** |
+
+   `{}` 是完全合法的形状。报错显示成 `{}`，是因为 loader 用 `JSON.stringify` 渲染
+   违规值，而它**会丢掉值为 `undefined` 的键**。按字面去找「空 headers 的 bug」
+   会白费时间。
+
+   **根因**：宿主进程没有 `ASTA_API_KEY`，`!!js process.env.ASTA_API_KEY` 求值为
+   `undefined`，headers 成了 `{ 'x-api-key': undefined }` → 校验失败。
+
+   **对 E19 的修正**：E19 记的是「一个坏行会让 mount 失败」；此处证明**配置校验失败
+   同样如此**，而且 `failOnStartupError: false` **兜不住它**——那个开关只覆盖**连接**
+   失败。「降级为没有检索工具」的前提是**配置先合法**。
+
+   **修复**：`x-api-key: !!js process.env.ASTA_API_KEY || 'UNSET'`，保证值永远是字符串。
+   缺 key 时配置合法、连接失败，才轮到 `failOnStartupError: false` 把它降级成
+   「没有检索工具 + 日志报错」。
+
+   **工程配套**：`scripts/start-dsh-web.ps1` 启动前做四项检查（代理变量、key 是否存在、
+   代理端口是否在监听、**真实连通性预检**）；`scripts/check-asta.mjs` 走一次
+   initialize + tools/list，把「key 存在」升级为「key 真的能用」。
+
 ### 5.4 bundle 装载的 L1 实证（替代了「必须重启宿主」）
 初稿把「新增 bundle 行在真实会话中生效」列为必须重启宿主才能验证的项目。**该结论已作废**：
 用一个**隔离的 `DSH_HOME`**（不改动运行中的宿主、不占用默认端口）即可完整验证装载链路。
@@ -629,6 +668,53 @@ v1.2 的 Phase 划分基本合理，但有三处需要调整：
 > | 隔离 profile 实机装载验证 | ✅ 通过：`cv-agent-dsh` 链入 profile，两行经 overlay 装载，进程启动无激活错误（E18-② 修复后） |
 > | cv-research agent preset（standard 裁剪 + isolate group） | ✅ 已产出：`~/.dsh/.agent-presets/cv-research/`（persona + `isolate: { projectState: true }` group + 状态族两行 + E20 护栏行）。**mount-validate 终验通过**（2026-09-15 宿主重启后，`standingKeyFor('cv-research')` 无错误挂载成功——E21 的双缓存随之清零） |
 > | 空流水线演示（真实会话里三模式走通） | ✅ 工具层已验收（11 条测试含三模式全走通 + 回滚）；真实会话体验：新开会话选择 CV Research Orchestrator 即可 |
+
+---
+
+## 7.5 Phase 2 启动（2026-09-15 决策记录与检查单）
+
+### 7.5.1 决策记录（用户确认）
+
+| # | 决策 | 对 v1.2 的变更 | 影响 |
+| --- | --- | --- | --- |
+| D1 | 学术检索**暂时走 asta 通道** | 推翻 §2.2「asta-skill 未检索到 → 忽略」 | Scout 的主检索通道改为 asta；dsh-ai4scholar 检索族降级为**备选/元数据补全**（其 38 个工具仍在库，`search_semantic_paper_match` 仍用于本地百篇论文的标题匹配补全）。§5.1 的 Scout `toolFilter` 白名单需按 asta 的**实际形态**重做 |
+| D2 | MinerU 改为 **API 形式**（Key 已配置） | 推翻 §2.3「本地部署优先」 | 落盘流水线的 `parse_channel: mineru` 直接实现为 REST 适配器（`POST /tasks` 异步任务 + 轮询，v1.2 §2.1 已核实该接口存在）；省掉本地部署与 GPU 占用。需确认：API 端点、key 的环境变量名、并发与限流参数（§19 降级矩阵的"解析失败/超时 → 快速通道"仍然适用） |
+| D3 | 学术检索与 MinerU 的 **API key 均已配置** | — | 走 dsh credentials wire API 或 `.env`（§23 密钥卫生：key 字面值不进 prompt、不进 git） |
+
+### 7.5.2 三库 schema 冻结提案（Phase 2 的启动截止项，待你批准）
+
+按 v1.2 §5.4 与 §17.1 的 DDL 整理，冻结范围**只含基础字段**（扩展字段走
+Domain Pack 的 `ext` JSON 列，不冻结）：
+
+| 表 | 冻结字段 |
+| --- | --- |
+| `papers` | `paper_id`(PK)、`title`、`authors`(JSON)、`year`、`venue`、`citation_count`、`doi`、`arxiv_id`、`pmid`、`url`、`oa_pdf_url`、`abstract`、`pdf_status`(pending/downloaded/missing)、`parse_channel`(mineru/quick_read/NULL)、`extraction_quality`(full_text/abstract_only/NULL)、`md_path`、`created_at`、`updated_at` |
+| `problems` / `methods` / `innovations` | `entry_id`(PK)、`statement`、`ext`(JSON)、`source_papers`(JSON)、`created_at`、`updated_at`；向量外置 vec0 虚拟表 |
+
+相对 v1.2 的两处**明确变更**（已在 core 契约里先行实现，请一并批准）：
+
+1. **三库条目统一用 `statement` 字段名**（v1.2 §5.4 表格里的
+   `problem_statement` / `method_name` / `innovation_statement` 作为语义别名，
+   不再进表结构）——`packages/core/src/schema/kb.ts` 已如此实现。
+2. **检索结果必须携带 `retrieval_mode`（vector / keyword_only）降级标记**
+   （§19 降级矩阵要求，但 v1.2 §10 的 `ScoringReport` 无承载字段，
+   勘误已补；`kb.search` 契约同样携带）。
+
+### 7.5.3 启动检查单（阻塞项排最前）
+
+| # | 事项 | 状态 | 谁能做 |
+| --- | --- | --- | --- |
+| P2-0 | **三库 schema 冻结提案批准**（§7.5.2） | **待你** | 你 |
+| P2-1 | 确认 asta 通道的**形态**（dsh skill？MCP 工具？CLI？）与其检索结果的输出结构 | **待你** | 你 |
+| P2-2 | 本地百篇 PDF 的目录路径 | **待你** | 你 |
+| P2-3 | MinerU API 端点 + key 环境变量名 + 限流参数 | **待你** | 你 |
+| P2-4 | 论文库落盘流水线：`metadata.db` 初始化、`cvagent_kb_import_paper`、MinerU API 适配器（异步任务 + 轮询） | P2-0 | 我 |
+| P2-5 | Scout 检索（asta 主通道 + dsh-ai4scholar 备选）与去重合并 | P2-1 | 我 |
+| P2-6 | Reader 结构化提取（走 outputSchema 的子代理）与 Analyst 三库更新 | P2-4 | 我 |
+| P2-7 | Phase 2 验收：从 0 检索某 Deepfake 子主题 → ≥100 篇论文库与三库，抽检 20 篇 | P2-5/6 | 我 |
+
+> P2-0 是 Phase 2 的**启动闸门**（v1.2 §14 的截止项）。P2-1/2/3 是外部事实，
+> 不阻塞 schema 冻结，但阻塞 P2-4/5 的实现。
 
 ---
 

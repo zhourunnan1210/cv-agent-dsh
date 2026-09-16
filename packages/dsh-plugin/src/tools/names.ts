@@ -20,8 +20,8 @@
  *
  * ## 命名约定
  *
- * - 全部小写 + 下划线，与 dsh 既有工具风格一致（`search_semantic`、`auto_cite`）；
- * - 前缀 `cvagent_` 表明归属，避免与 dsh-ai4scholar 的 38 个工具及宿主工具冲突；
+ * - 全部小写 + 下划线，与 dsh 既有工具风格一致（`ask_user_question`、`todo_write`）；
+ * - 前缀 `cvagent_` 表明归属，避免与宿主工具及 Asta MCP 工具（`mcp__asta__*`）冲突；
  * - 名字一经发布不得更改（会破坏已记录会话的回放与既存 `toolFilter`）。
  *
  * ## 与 v1.2 §15 的差异
@@ -104,63 +104,100 @@ export const CVAGENT_TOOL_FAMILIES = {
 export type CvAgentToolName = (typeof ALL_CVAGENT_TOOLS)[number]
 
 /**
- * dsh-ai4scholar 中本项目依赖的工具名。
+ * Asta MCP 工具名（Semantic Scholar 学术图谱）。
  *
- * 由 L1 实证得出（`tests/smoke-vendor-plugin.mjs` 打印的 38 个工具全名单），
- * 因此可以安全用于 `toolFilter`。只列出本项目实际引用的部分，不是全量 38 个。
+ * Asta 是 Ai2 的 Scientific Corpus Tool，经 dsh 自带的
+ * `@deepseek-ai/dsh-mcp-client` 桥接为原生工具。名字形态由该桥的契约钉死：
  *
- * @see packages/vendor/dsh-ai4scholar —— 38 个工具的权威定义处
+ *     mcp__<serverName>__<rawName>
+ *
+ * 其中 `serverName` 是组合文件里 `config.serverName` 指定的**本地命名空间**
+ * （本项目取 `asta`），不是远端自称的名字——远端名字不可信、跨部署不唯一，
+ * 且可能随上游升级变化，都不能用来命名模型可见的工具。命名是纯函数，
+ * 因此会话历史与权限规则能跨重启与 HMR 存活。
+ *
+ * 这 8 个名字由 **L1 实证**与真实服务器对齐（`tests/spike-asta-mcp.mjs`：
+ * 装载 → 注册 → 真实执行 → 卸载，5 条断言）。离线契约校验在
+ * `tests/names.test.mjs`；线上对齐只能由 spike 承担（它需要网络与 key）。
+ *
+ * ## 与旧检索后端（dsh-ai4scholar）的差异
+ *
+ * 该 bundle 已于 2026-09-16 从 web profile 停用。有两处能力**没有**随 Asta
+ * 回来，是明确接受的损失，不要误以为只是换了个名字：
+ *
+ * - **没有全文 / PDF 读取**：Asta 只给元数据与正文片段，没有 `read_*`。
+ *   全文获取改由 `paper-fetch` skill（DOI → PDF，已归档在 `.dsh/skills/`）
+ *   承担，解析后续接 MinerU。
+ * - **没有 `auto_cite` / `sci_draw`**：写作阶段的引用插入与科研绘图能力在
+ *   本次切换中一并移除，需要时再单独引入。
+ *
+ * @see tests/spike-asta-mcp.mjs —— 线上 L1 实证
  */
-export const VENDOR_TOOL_NAMES = {
-  /** 统一跨平台检索（§5.1 核心）。 */
-  searchPapers: 'search_papers',
-  /** 标题匹配，用于本地百篇论文的元数据补全（§5.1 用户约束）。 */
-  matchPaper: 'search_semantic_paper_match',
-  /** 引用图：某论文引用了谁。 */
-  citations: 'get_semantic_citations',
-  /** 引用图：谁引用了某论文。 */
-  references: 'get_semantic_references',
-  /** 基于已有论文的推荐发现。 */
-  recommendations: 'get_semantic_recommendations',
-  /** 单篇推荐。 */
-  recommendationsForPaper: 'get_semantic_recommendations_for_paper',
-  /** 全文读取（快速通道）。 */
-  readSemanticPaper: 'read_semantic_paper',
-  readArxivPaper: 'read_arxiv_paper',
-  readByDoi: 'read_by_doi',
-  /** 真实引用插入 + BibTeX（§8.2 写作）。 */
-  autoCite: 'auto_cite',
-  /** 科研图生成（§8.2 写作）。 */
-  sciDraw: 'sci_draw',
-  /** 计费额度查询（§20 成本模型）。 */
-  credits: 'get_ai4scholar_credits',
+export const ASTA_TOOL_NAMES = {
+  /** 主题检索，支持 venue / 日期过滤。 */
+  searchByRelevance: 'mcp__asta__search_papers_by_relevance',
+  /** 已知标题 → 论文（含 DOI / arXiv 等 externalIds）。 */
+  searchByTitle: 'mcp__asta__search_paper_by_title',
+  /** 单篇按标识符取详情。 */
+  getPaper: 'mcp__asta__get_paper',
+  /** 批量取详情；`ids` 必须是 JSON 数组，不是逗号串。 */
+  getPaperBatch: 'mcp__asta__get_paper_batch',
+  /** 前向引用（谁引用了它）。Asta **没有** `get_references`。 */
+  citations: 'mcp__asta__get_citations',
+  /** 作者检索：默认只回 `name`，必须显式请求可排序字段。 */
+  searchAuthors: 'mcp__asta__search_authors_by_name',
+  /** 作者论文列表；字段参数名是 `paper_fields`，默认 `limit=1000`。 */
+  authorPapers: 'mcp__asta__get_author_papers',
+  /** 正文片段检索：单条 ~500 词、默认 20 条，全族最重的工具。 */
+  snippetSearch: 'mcp__asta__snippet_search',
 } as const
 
-/** 检索族工具名集合，供 Scout 角色的 `toolFilter.allow` 直接使用。 */
+/**
+ * 单个 Asta 工具名。
+ *
+ * 注意用 `[keyof typeof ...]` 而不是 `[number]`：`ASTA_TOOL_NAMES` 是**对象**
+ * 字面量而非数组，对它做数字索引会报 TS2537（no matching index signature for
+ * type 'number'）。`ALL_CVAGENT_TOOLS` 是数组，所以那边的 `[number]` 是对的。
+ */
+export type AstaToolName = (typeof ASTA_TOOL_NAMES)[keyof typeof ASTA_TOOL_NAMES]
+
+/**
+ * Scout 角色的 `toolFilter.allow`（勘误 §4.2）：只做检索与去重，回传候选列表。
+ *
+ * 刻意**不含** `snippet_search`——§5.1 要求 Scout 只返回候选，不返回正文。
+ */
 export const SCOUT_ALLOWED_TOOLS = [
-  VENDOR_TOOL_NAMES.searchPapers,
-  VENDOR_TOOL_NAMES.matchPaper,
-  VENDOR_TOOL_NAMES.citations,
-  VENDOR_TOOL_NAMES.references,
-  VENDOR_TOOL_NAMES.recommendations,
-  VENDOR_TOOL_NAMES.recommendationsForPaper,
+  ASTA_TOOL_NAMES.searchByRelevance,
+  ASTA_TOOL_NAMES.searchByTitle,
+  ASTA_TOOL_NAMES.getPaper,
+  ASTA_TOOL_NAMES.getPaperBatch,
+  ASTA_TOOL_NAMES.citations,
+  ASTA_TOOL_NAMES.searchAuthors,
+  ASTA_TOOL_NAMES.authorPapers,
+] as const
+
+/**
+ * Reader 角色的 `toolFilter.allow`：围绕**单篇**取证。
+ *
+ * ⚠️ 已知缺口：§5.3 要求 Reader 加载单篇全文，而 Asta 不提供全文。当前只能
+ * 用 `get_paper`（元数据 / 摘要）与 `snippet_search`（限定 `paper_ids` 的正文
+ * 片段）近似替代；真正的全文阅读等 MinerU 解析服务落地后补上
+ * （勘误 §5.5 的 S3 项目）。
+ */
+export const READER_ALLOWED_TOOLS = [
+  ASTA_TOOL_NAMES.getPaper,
+  ASTA_TOOL_NAMES.snippetSearch,
 ] as const
 
 /**
  * 主编排会话禁用的重上下文工具（E20 执行级护栏的默认名单）。
  *
- * 依据 §1.3 原则四：全文阅读与 PDF 下载是重上下文操作，属于 Reader/Scout
- * 子代理，不属于主 Agent。名字来自 L1 实证的 38 工具全名单。
+ * 名单随检索后端变更而重写：旧名单是 dsh-ai4scholar 的 5 个 `read_*` +
+ * 5 个 `download_*`，而 Asta 里**这两个前缀一个都不存在**。
+ *
+ * 剩下的重上下文工具只有一个：`snippet_search`——单条 ~500 词、默认 20 条，
+ * 是全族里每行最重的。其余 7 个返回元数据行，量级由 `limit` 控制。
  */
 export const ORCHESTRATOR_DENY_TOOLS = [
-  'read_semantic_paper',
-  'read_arxiv_paper',
-  'read_by_doi',
-  'read_biorxiv_paper',
-  'read_medrxiv_paper',
-  'download_semantic',
-  'download_arxiv',
-  'download_by_doi',
-  'download_biorxiv',
-  'download_medrxiv',
+  ASTA_TOOL_NAMES.snippetSearch,
 ] as const

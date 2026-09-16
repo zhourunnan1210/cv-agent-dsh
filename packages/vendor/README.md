@@ -2,6 +2,14 @@
 
 本目录存放从上游直接复制入库、需要二次开发的第三方插件源码。
 
+> ⚠️ **2026-09-16：`dsh-ai4scholar` 已停用。**
+> 它不再出现在 web profile 的 `dsh.profile.bundles` 里，因此其 38 个工具**不会**
+> 注册到任何会话。学术检索改走 Asta MCP（见 `packages/dsh-plugin/presets/README.md`
+> 与 `NOTICE.md`）。源码与 LICENSE 仍保留在本目录备查，`tests/smoke-vendor-plugin.mjs`
+> 也仍能驱动它并断言 38 个工具——那是**归档件的完整性检查**，不代表它被装载。
+> 若要恢复：把 `"dsh-ai4scholar"` 加回 profile 的 `bundles` 并重启宿主（E21：
+> 运行中的宿主不会热加载 bundle 行）。
+
 ## dsh-ai4scholar
 
 | 项目 | 值 |

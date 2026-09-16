@@ -82,6 +82,65 @@
 - id: cvagent-orchestrator-guard
   name: cv-agent-dsh/orchestrator-guard
 
+# ── academic retrieval: Asta MCP ────────────────────────────────────────────
+#
+# Asta is Ai2's Scientific Corpus Tool — the Semantic Scholar graph served at
+# <https://asta-tools.allen.ai/mcp/v1> over streamable HTTP, authenticated with
+# an `x-api-key` header. dsh ships the bridge (`@deepseek-ai/dsh-mcp-client`);
+# it registers every remote tool here as a native tool named
+# `mcp__<serverName>__<rawName>`, e.g. `mcp__asta__search_papers_by_relevance`.
+# Those names are a pinned contract: they go into `toolFilter` whitelists and
+# into session history, and `names.ts` declares them (see ASTA_TOOL_NAMES).
+#
+# This row sits in the PRESET, not the host composition. The tools land in this
+# preset's layer of the host `tools` registry, so this agent sees them and a
+# delegated child's `toolFilter` can select them — without putting a retrieval
+# surface into every session's catalog. It provides no service, so it needs no
+# `isolate` realm (same rule as the tool rows below).
+#
+# WHY THIS REPLACED dsh-ai4scholar (stopped 2026-09-16): the project needs a
+# retrieval backend that is MCP-native. The trade is explicit and already
+# reflected in names.ts and the role matrix — Asta has NO full-text/PDF reader
+# (paper-fetch skill covers DOI -> PDF; MinerU will cover parsing) and NO
+# auto_cite/sci_draw.
+#
+# ENVIRONMENT — two variables, both required, both easy to miss:
+#   1. `ASTA_API_KEY` (read below via `!!js`, never written into this file);
+#   2. the host process must start with `HTTPS_PROXY` **and**
+#      `NODE_USE_ENV_PROXY=1`. Node 24's global fetch ignores HTTPS_PROXY
+#      without that flag, and the MCP transport is fetch-based: measured
+#      2026-09-16, proxy-only = 403, proxy + flag = 200. Without both, this
+#      row connects to nothing and the agent silently has no search tools.
+#
+# ⚠️ The `|| 'UNSET'` fallback below is NOT cosmetic. Without it, a missing
+# ASTA_API_KEY evaluates to `undefined`, the header value fails the row's
+# schema validation, and **the whole preset fails to mount** — E19's rule that
+# one bad row takes the mount down applies to CONFIG errors too, not just
+# connection errors. Measured 2026-09-16 against the real Config schema:
+#   headers: {}                      -> accepted
+#   headers: { 'x-api-key': '' }     -> accepted
+#   headers: { 'x-api-key': undefined } -> REJECTED
+# (The loader's error message renders the offending value with JSON.stringify,
+#  which DROPS undefined keys — so it misleadingly reports `headers: {}`, an
+#  entirely valid shape. Do not go hunting for an empty-headers bug.)
+# With the fallback the config always validates; a missing key then degrades to
+# a failed connection, which `failOnStartupError: false` already survives.
+#
+# `failOnStartupError` is deliberately left at its default (false): with `true`
+# a proxy outage would reject this row and take the whole preset's mount down
+# with it (E19 showed a single bad row fails the mount). Degrading to "no
+# search tools, with an error in the log" is the better failure here.
+- id: mcp-asta
+  name: '@deepseek-ai/dsh-mcp-client'
+  config:
+    serverName: asta
+    transport: streamable-http
+    url: https://asta-tools.allen.ai/mcp/v1
+    headers:
+      # `|| 'UNSET'` 保证值永远是字符串：缺 key 时求值为 undefined 会让整行校验失败，
+      # 进而拖垮整个 preset 的挂载（详见上方注释与实测记录）。
+      x-api-key: !!js process.env.ASTA_API_KEY || 'UNSET'
+
 # ── shell ───────────────────────────────────────────────────────────────────
 
 # `shell-env` stays in the HOST composition: `apps/cli/src/web.ts` injects it to
