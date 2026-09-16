@@ -722,8 +722,8 @@ Domain Pack 的 `ext` JSON 列，不冻结）：
 | P2-1 | 确认 asta 通道的**形态**（dsh skill？MCP 工具？CLI？）与其检索结果的输出结构 | ✅ 已解决：Asta MCP（Ai2，`asta-tools.allen.ai/mcp/v1`，streamable-http + `x-api-key`），8 个工具 `mcp__asta__*`，名字契约在 `names.ts`；`tests/spike-asta-mcp.mjs` L1 实证 + 连通预检 v1.12.3 通过；preset 已有 `mcp-asta` 行 | 我 |
 | P2-2 | 本地百篇 PDF 的目录路径 | ✅ 已解决：`C:\Users\Admin\Zotero\storage`（递归），实测 **151 篇 PDF** | 我 |
 | P2-3 | MinerU API 端点 + key 环境变量名 + 限流参数 | ✅ 已完成：`docs/mineru-api.md`（端点全部实测、`MINERU_TOKEN` 在 `.env.local` 已验、官方限流与上传优先链路）——P2-4 直接按它实现 | 我 |
-| P2-4 | 论文库落盘流水线：`metadata.db` 初始化、`cvagent_kb_import_paper`、MinerU API 适配器（异步任务 + 轮询） | ✅ 实现 + 接线完成：迁移框架/PaperLibrary、kb 服务 + import 工具行（6 测试）、MinerU 适配器 + 额度账本（11 测试）；kb 组已入 preset、mineru-quota 行已入宿主 cordis.patch.yml。**验证待一次宿主重启**（E21：新 exports 子路径需重启可见） | 我 |
-| P2-5 | Scout 检索（asta 主通道 + dsh-ai4scholar 备选）与去重合并 | 🔄 进行中：Zotero 本地导入已完成（`scripts/import-zotero.mjs`：快照只读解析 → 规范化 → 落库去重，**147 条入库**：doi=86、arxiv=2、local=59；3 个本地文件挂接 DOI 记录，1 条真歧义留人工；重复运行幂等 merged=147）。asta 元数据富化（补引用数/摘要）待工具行重启后可跑 | 我 |
+| P2-4 | 论文库落盘流水线：`metadata.db` 初始化、`cvagent_kb_import_paper`、MinerU API 适配器（异步任务 + 轮询） | ✅ 实现 + 接线 + **重启后验证通过**：kb 组经 `standingKeyFor('cv-research')` 挂载成功；mineru-quota 行在宿主组合树中就位 | 我 |
+| P2-5 | Scout 检索（asta 主通道 + dsh-ai4scholar 备选）与去重合并 | ✅ 本地导入 + Asta 富化完成：147 条入库，**145/147 有外部 ID**（DOI 134 / arXiv 61）；2 条无结果留待人工。`scripts/import-zotero.mjs`（幂等）+ `scripts/enrich-asta.mjs`（标题归一化相等才合并、1s 节流）。**L1 新坑**：asta `search_paper_by_title` 的 `fields` 带 `abstract` 会让服务端挂起（MCP -32001 超时），只用 `title,year,venue,externalIds`；返回形状为 `value.content[0].text` 内嵌 JSON | 我 |
 | P2-6 | Reader 结构化提取（走 outputSchema 的子代理）与 Analyst 三库更新 | P2-4 | 我 |
 | P2-7 | Phase 2 验收：从 0 检索某 Deepfake 子主题 → ≥100 篇论文库与三库，抽检 20 篇 | P2-5/6 | 我 |
 
