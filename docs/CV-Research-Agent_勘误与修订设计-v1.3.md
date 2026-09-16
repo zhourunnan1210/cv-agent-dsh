@@ -636,17 +636,6 @@ v1.2 的 Phase 划分基本合理，但有三处需要调整：
 3. **Phase 2 增加前置：ai4scholar 真实调用与计费标定**（§20 成本模型的输入）。否则 C 模式预算护栏（§4.2）没有可用参数。
    → 2026-09-15 用户裁定：**检索暂时走 asta 通道**，此前置相应降级为"asta 通道的成本/限额摸清"。
 
-## 7.5 Phase 2 启动记录（2026-09-15 用户裁定）
-
-| 项 | 裁定 | 对实现的影响 |
-| --- | --- | --- |
-| 学术检索通道 | **暂时走 asta 通道**（原文档 §2.2 曾标"待核实"，现已确认可用） | 检索层不写死通道：入库统一走 `cvagent_kb_import_paper` 的规范化记录；papers 表新增 `source_channel` 字段（asta / ai4scholar / manual）。dsh-ai4scholar 38 工具保留为次级通道。**待确认：asta 的具体形态（工具名 / 返回结构 / Agent 如何调用）** |
-| PDF 深度解析 | **MinerU 以 API 形式接入**（非本地部署） | 落盘流水线调 MinerU REST API；凭证用 `ctx.credentials.resolve(ref)` **每次操作现取、绝不缓存、绝不落日志**（已核实契约，§23 密钥卫生）。双通道降级矩阵（§19）保留：MinerU 失败 → 快速通道 → `abstract_only`。**待确认：API base URL 与凭证名** |
-| 密钥 | **均已配置** | 实现时只引用凭证名与 base URL，不读取/打印值 |
-
-Phase 2 开工硬门：**三库 schema 冻结**（v1.2 §14 截止项）。提案见
-`docs/Phase2-三库schema冻结提案.md`，待确认后冻结。
-
 ---
 
 ## 7. 下一步（按依赖排序）
@@ -712,6 +701,19 @@ Domain Pack 的 `ext` JSON 列，不冻结）：
    （§19 降级矩阵要求，但 v1.2 §10 的 `ScoringReport` 无承载字段，
    勘误已补；`kb.search` 契约同样携带）。
 
+**本提案补充的三处实现细节**（asta 裁定与工程教训的落点，一并批准）：
+
+3. `papers` 增加 **`source_channel`** 字段（`asta` / `ai4scholar` / `manual`，
+   默认 `manual`）——检索层不写死通道，入库统一走规范化记录，通道差异留在
+   这一列 + 通道适配器里。
+4. **去重键优先级**：`paper_id` 精确匹配（DOI/arXiv ID 归一化：小写、去
+   `arXiv:`/`https://doi.org/` 前缀）→ `doi`/`arxiv_id`/`pmid` 任一命中合并
+   （保留较长 abstract、union authors）→ 标题归一化匹配仅作人工复核级线索，
+   不自动合并。
+5. **结构迁移纪律**：`metadata.db` 附带 `schema_migrations` 表；本提案冻结后的
+   任何结构改动走版本化迁移脚本，禁止原地漂移（E 系列教训的延续）。索引：
+   `papers(doi)`、`(arxiv_id)`、`(pmid)`、`(title)`、`(year)`。
+
 ### 7.5.3 启动检查单（阻塞项排最前）
 
 | # | 事项 | 状态 | 谁能做 |
@@ -719,7 +721,7 @@ Domain Pack 的 `ext` JSON 列，不冻结）：
 | P2-0 | **三库 schema 冻结提案批准**（§7.5.2） | **待你** | 你 |
 | P2-1 | 确认 asta 通道的**形态**（dsh skill？MCP 工具？CLI？）与其检索结果的输出结构 | **待你** | 你 |
 | P2-2 | 本地百篇 PDF 的目录路径 | **待你** | 你 |
-| P2-3 | MinerU API 端点 + key 环境变量名 + 限流参数 | **待你** | 你 |
+| P2-3 | MinerU API 端点 + key 环境变量名 + 限流参数 | ✅ 已完成：`docs/mineru-api.md`（端点全部实测、`MINERU_TOKEN` 在 `.env.local` 已验、官方限流与上传优先链路）——P2-4 直接按它实现 | 我 |
 | P2-4 | 论文库落盘流水线：`metadata.db` 初始化、`cvagent_kb_import_paper`、MinerU API 适配器（异步任务 + 轮询） | P2-0 | 我 |
 | P2-5 | Scout 检索（asta 主通道 + dsh-ai4scholar 备选）与去重合并 | P2-1 | 我 |
 | P2-6 | Reader 结构化提取（走 outputSchema 的子代理）与 Analyst 三库更新 | P2-4 | 我 |
