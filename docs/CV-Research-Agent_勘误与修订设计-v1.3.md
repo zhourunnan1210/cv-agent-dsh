@@ -722,7 +722,7 @@ Domain Pack 的 `ext` JSON 列，不冻结）：
 | P2-1 | 确认 asta 通道的**形态**（dsh skill？MCP 工具？CLI？）与其检索结果的输出结构 | ✅ 已解决：Asta MCP（Ai2，`asta-tools.allen.ai/mcp/v1`，streamable-http + `x-api-key`），8 个工具 `mcp__asta__*`，名字契约在 `names.ts`；`tests/spike-asta-mcp.mjs` L1 实证 + 连通预检 v1.12.3 通过；preset 已有 `mcp-asta` 行 | 我 |
 | P2-2 | 本地百篇 PDF 的目录路径 | ✅ 已解决：`C:\Users\Admin\Zotero\storage`（递归），实测 **151 篇 PDF** | 我 |
 | P2-3 | MinerU API 端点 + key 环境变量名 + 限流参数 | ✅ 已完成：`docs/mineru-api.md`（端点全部实测、`MINERU_TOKEN` 在 `.env.local` 已验、官方限流与上传优先链路）——P2-4 直接按它实现 | 我 |
-| P2-4 | 论文库落盘流水线：`metadata.db` 初始化、`cvagent_kb_import_paper`、MinerU API 适配器（异步任务 + 轮询） | 🔄 进行中：schema 层完成（node:sqlite 迁移框架 + PaperLibrary upsert/去重/合并，core 24 + dsh-plugin 35 测试全绿）；工具行与 MinerU 适配器待续 | 我 |
+| P2-4 | 论文库落盘流水线：`metadata.db` 初始化、`cvagent_kb_import_paper`、MinerU API 适配器（异步任务 + 轮询） | ✅ 实现完成：迁移框架 + PaperLibrary（4a）、kb 服务 + import 工具行（4b，6 条管线测试）、MinerU 适配器 + 额度账本（4c，10 条测试）。**待接线**：kb 行进 cv-research preset（isolate group）+ MinerU 额度账本行进宿主 cordis.patch.yml；接线后需一次宿主重启（E21 的 exports 缓存） | 我 |
 | P2-5 | Scout 检索（asta 主通道 + dsh-ai4scholar 备选）与去重合并 | P2-1 | 我 |
 | P2-6 | Reader 结构化提取（走 outputSchema 的子代理）与 Analyst 三库更新 | P2-4 | 我 |
 | P2-7 | Phase 2 验收：从 0 检索某 Deepfake 子主题 → ≥100 篇论文库与三库，抽检 20 篇 | P2-5/6 | 我 |
