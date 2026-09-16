@@ -9,6 +9,7 @@
  */
 
 export * from './schema/kb.js'
+export * from './schema/paper.js'
 export * from './scoring/idea.js'
 export * from './state/machine.js'
 export * from './domain/pack.js'
