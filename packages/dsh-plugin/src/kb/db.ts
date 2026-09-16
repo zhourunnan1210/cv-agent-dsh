@@ -123,6 +123,69 @@ export const MIGRATIONS: readonly Migration[] = [
       );
     `,
   },
+  {
+    // P3-1：三库全文检索（`cvagent_kb_search` 的底座）。
+    //
+    // 选型依据是 S4 spike 的实测（`scripts/spike-s4-retrieval.mjs`，2026-09-17）：
+    // - **不需要向量索引**：1000 条 × 768 维暴力全扫仅 1.19ms，三库规模远在其下；
+    // - **FTS5 可用**，但中文必须用 `trigram` 分词器（默认 unicode61 对中文不做词切分，
+    //   整串成一个 token，子串查不到）；
+    // - trigram 的硬限制：**查询串须 ≥3 字符**（2 字中文查不到）。因此 TriLibrary.search
+    //   对 <3 字符的查询回退 `LIKE`——两条路径都要有，否则「泛化」这类两字查询会静默返回空。
+    //
+    // 形态：external-content FTS5（`content='<表名>'`）+ 三个触发器保持同步。
+    // 用 external content 而不是 contentless，是为了让 `rebuild` 能在任何时刻
+    // 从基表重建索引（迁移里已对既有条目执行一次），不需要我们手工维护镜像。
+    version: 4,
+    up: `
+      CREATE VIRTUAL TABLE problems_fts USING fts5(
+        statement, content='problems', content_rowid='rowid', tokenize='trigram'
+      );
+      CREATE VIRTUAL TABLE methods_fts USING fts5(
+        statement, content='methods', content_rowid='rowid', tokenize='trigram'
+      );
+      CREATE VIRTUAL TABLE innovations_fts USING fts5(
+        statement, content='innovations', content_rowid='rowid', tokenize='trigram'
+      );
+
+      CREATE TRIGGER problems_fts_ai AFTER INSERT ON problems BEGIN
+        INSERT INTO problems_fts(rowid, statement) VALUES (new.rowid, new.statement);
+      END;
+      CREATE TRIGGER problems_fts_ad AFTER DELETE ON problems BEGIN
+        INSERT INTO problems_fts(problems_fts, rowid, statement) VALUES ('delete', old.rowid, old.statement);
+      END;
+      CREATE TRIGGER problems_fts_au AFTER UPDATE ON problems BEGIN
+        INSERT INTO problems_fts(problems_fts, rowid, statement) VALUES ('delete', old.rowid, old.statement);
+        INSERT INTO problems_fts(rowid, statement) VALUES (new.rowid, new.statement);
+      END;
+
+      CREATE TRIGGER methods_fts_ai AFTER INSERT ON methods BEGIN
+        INSERT INTO methods_fts(rowid, statement) VALUES (new.rowid, new.statement);
+      END;
+      CREATE TRIGGER methods_fts_ad AFTER DELETE ON methods BEGIN
+        INSERT INTO methods_fts(methods_fts, rowid, statement) VALUES ('delete', old.rowid, old.statement);
+      END;
+      CREATE TRIGGER methods_fts_au AFTER UPDATE ON methods BEGIN
+        INSERT INTO methods_fts(methods_fts, rowid, statement) VALUES ('delete', old.rowid, old.statement);
+        INSERT INTO methods_fts(rowid, statement) VALUES (new.rowid, new.statement);
+      END;
+
+      CREATE TRIGGER innovations_fts_ai AFTER INSERT ON innovations BEGIN
+        INSERT INTO innovations_fts(rowid, statement) VALUES (new.rowid, new.statement);
+      END;
+      CREATE TRIGGER innovations_fts_ad AFTER DELETE ON innovations BEGIN
+        INSERT INTO innovations_fts(innovations_fts, rowid, statement) VALUES ('delete', old.rowid, old.statement);
+      END;
+      CREATE TRIGGER innovations_fts_au AFTER UPDATE ON innovations BEGIN
+        INSERT INTO innovations_fts(innovations_fts, rowid, statement) VALUES ('delete', old.rowid, old.statement);
+        INSERT INTO innovations_fts(rowid, statement) VALUES (new.rowid, new.statement);
+      END;
+
+      INSERT INTO problems_fts(problems_fts) VALUES('rebuild');
+      INSERT INTO methods_fts(methods_fts) VALUES('rebuild');
+      INSERT INTO innovations_fts(innovations_fts) VALUES('rebuild');
+    `,
+  },
 ]
 
 /** papers 表与三库的 SQLite 行形态。 */

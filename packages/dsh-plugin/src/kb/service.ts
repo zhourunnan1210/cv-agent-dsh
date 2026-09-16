@@ -16,11 +16,27 @@ import { Service } from '@deepseek-ai/cordis'
 import type { Context } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 
-import type { PaperExtraction, PaperRecord } from '@cv-research/core'
+import type { ExtensionFields, KbEntry, PaperExtraction, PaperRecord, StoreName } from '@cv-research/core'
 
 import { PaperDatabase } from './db.js'
 import { PaperLibrary } from './library.js'
 import type { UpsertPaperOutcome } from './library.js'
+import { TriLibrary } from './trilibrary.js'
+import type { SearchOptions, TriLibrarySummary } from './trilibrary.js'
+
+/** 三库写入结果（带 store，便于工具层直接回显）。 */
+export interface UpsertEntryOutcome {
+  readonly entry_id: string
+  readonly merged: boolean
+  readonly merged_into?: string
+  readonly store: StoreName
+}
+
+/** 三库检索参数（与 TriLibrary.search 同形，服务层不改语义）。 */
+export type EntrySearchOptions = SearchOptions
+
+/** 三库总览。 */
+export type EntrySummary = TriLibrarySummary
 
 /** 插件配置。 */
 export interface Config {
@@ -61,12 +77,17 @@ export interface KbApi {
   saveExtraction(extraction: PaperExtraction): void
   getExtraction(paperId: string): PaperExtraction | undefined
   extractionCount(): number
+  upsertEntry(store: StoreName, statement: string, sourcePapers: readonly string[], ext: ExtensionFields): UpsertEntryOutcome
+  searchEntries(options?: EntrySearchOptions): KbEntry[]
+  getEntry(store: StoreName, entryId: string): KbEntry | undefined
+  entrySummary(): EntrySummary
 }
 
 export class KbService extends Service implements KbApi {
   static inject = []
 
   private readonly library: PaperLibrary
+  private readonly entries: TriLibrary
   private readonly database: PaperDatabase
 
   constructor(ctx: Context, config: Config = {}) {
@@ -74,6 +95,7 @@ export class KbService extends Service implements KbApi {
     const resolved = resolveKbConfig(config)
     this.database = new PaperDatabase(resolved.dbPath)
     this.library = new PaperLibrary(this.database)
+    this.entries = new TriLibrary(this.database)
   }
 
   upsertPaper(record: PaperRecord): UpsertPaperOutcome {
@@ -102,6 +124,23 @@ export class KbService extends Service implements KbApi {
 
   extractionCount(): number {
     return this.library.extractionCount()
+  }
+
+  upsertEntry(store: StoreName, statement: string, sourcePapers: readonly string[], ext: ExtensionFields): UpsertEntryOutcome {
+    const outcome = this.entries.upsert(store, statement, sourcePapers, ext)
+    return { ...outcome, store }
+  }
+
+  searchEntries(options: EntrySearchOptions = {}): KbEntry[] {
+    return this.entries.search(options)
+  }
+
+  getEntry(store: StoreName, entryId: string): KbEntry | undefined {
+    return this.entries.get(store, entryId)
+  }
+
+  entrySummary(): EntrySummary {
+    return this.entries.summary()
   }
 
   /** 关闭数据库（unload / 测试用；Cordis 卸载时由 effect 处置）。 */

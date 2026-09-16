@@ -97,6 +97,13 @@
     - id: tool-cvagent-kb-extract
       name: cv-agent-dsh/kb-extract
 
+    # P3-1: cvagent_kb_upsert_entry / cvagent_kb_search / cvagent_kb_summary —
+    # 三库读写面（Analyst 写条目、Orchestrator 检索与总览）。与 kb 服务同组的
+    # 原因同上；**单列一行**是为了让角色矩阵能按需授予：Reader 子代理应有
+    # 读文件 + 结构化输出，但不该拿到三库写权限。
+    - id: tool-cvagent-kb-entries
+      name: cv-agent-dsh/kb-entries
+
 # ── orchestrator execution-level guard (E20) ───────────────────────────────
 #
 # Provides no service — consumes the host `tools` event surface and the host

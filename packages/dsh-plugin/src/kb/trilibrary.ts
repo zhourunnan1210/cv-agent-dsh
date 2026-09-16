@@ -30,6 +30,25 @@ interface EntryRow {
   updated_at: string
 }
 
+/** `TriLibrary.search` 的查询参数。 */
+export interface SearchOptions {
+  /** 缺省搜索三个库。 */
+  readonly store?: StoreName
+  /** 关键词；≥3 字符走 FTS5 trigram，否则 LIKE 回退。空串表示只要过滤条件。 */
+  readonly query?: string
+  /** 每库最多返回条数（缺省 20，上限 200）。 */
+  readonly limit?: number
+  /** 只看「该论文作为来源之一」的条目。 */
+  readonly sourcePaper?: string
+}
+
+/** 三库总览。 */
+export interface TriLibrarySummary {
+  readonly counts: Record<StoreName, number>
+  readonly total: number
+  readonly latest_updated_at: string | null
+}
+
 function rowToEntry(store: StoreName, row: EntryRow): KbEntry {
   const base = {
     entry_id: row.entry_id,
@@ -112,6 +131,90 @@ export class TriLibrary {
       .prepare(`SELECT * FROM ${store} WHERE entry_id = ?`)
       .get(entryId) as EntryRow | undefined
     return row === undefined ? undefined : rowToEntry(store, row)
+  }
+
+  /**
+   * 三库检索（`cvagent_kb_search` 的底座）。
+   *
+   * 两条路径（S4 spike 的实测结论，见 db.ts 迁移 v4 注释）：
+   * - 查询串 **≥3 字符** → FTS5 `MATCH`（trigram）。查询串整体当作一个短语，用双引号
+   *   包住交给 FTS5，避免把 `-`/`OR`/`*` 之类当语法解析（用户/模型输入不可信）；
+   * - 查询串 **<3 字符**（或 FTS5 报错）→ `LIKE '%…%'` 回退。trigram 索引查不到
+   *   2 字中文，而「泛化」这类两字词恰恰是常用检索词。
+   *
+   * 过滤：store（缺省搜索三个库）、source_paper（该论文作为来源之一）。
+   * 排序：命中相关性（FTS5 `rank`）优先，其次 entry_id；跨库时按 problems → methods
+   * → innovations 分组返回，便于调用方按角色消费。
+   */
+  search(options: SearchOptions = {}): KbEntry[] {
+    const stores: readonly StoreName[] = options.store === undefined
+      ? ['problems', 'methods', 'innovations']
+      : [options.store]
+    const limit = options.limit === undefined || options.limit <= 0 ? 20 : Math.min(options.limit, 200)
+    const query = options.query?.trim() ?? ''
+    const results: KbEntry[] = []
+    for (const store of stores) {
+      const rows = this.searchOne(store, query, limit, options.sourcePaper)
+      for (const row of rows) results.push(rowToEntry(store, row))
+    }
+    return results
+  }
+
+  private searchOne(store: StoreName, query: string, limit: number, sourcePaper: string | undefined): EntryRow[] {
+    const filters: string[] = []
+    const params: (string | number)[] = []
+    // source_papers 是 JSON 数组文本；用带引号的片段匹配整元素，避免子串误命中
+    if (sourcePaper !== undefined && sourcePaper !== '') {
+      filters.push(`t.source_papers LIKE ?`)
+      params.push(`%"${sourcePaper}"%`)
+    }
+
+    if (query !== '') {
+      // ≥3 字符才走 FTS5（trigram 的下限）；否则 LIKE
+      if ([...query].length >= 3) {
+        const ftsQuery = `"${query.replace(/"/g, '""')}"`
+        try {
+          const where = [`${store}_fts MATCH ?`, ...filters]
+          const rows = this.db.raw
+            .prepare(`
+              SELECT t.* FROM ${store} AS t
+              JOIN ${store}_fts AS f ON f.rowid = t.rowid
+              WHERE ${where.join(' AND ')}
+              ORDER BY f.rank LIMIT ?
+            `)
+            .all(ftsQuery, ...params, limit) as unknown as EntryRow[]
+          return rows
+        } catch {
+          // FTS5 不可用/语法异常 → 落到 LIKE（宁可慢一点，也不要静默空结果）
+        }
+      }
+      filters.push(`t.statement LIKE ?`)
+      params.push(`%${query}%`)
+    }
+
+    const where = filters.length === 0 ? '' : `WHERE ${filters.join(' AND ')}`
+    return this.db.raw
+      .prepare(`SELECT t.* FROM ${store} AS t ${where} ORDER BY t.entry_id LIMIT ?`)
+      .all(...params, limit) as unknown as EntryRow[]
+  }
+
+  /** 各库条目数 + 最近更新时间（`cvagent_kb_summary` 的底座）。 */
+  summary(): TriLibrarySummary {
+    const counts = this.counts()
+    const latest = this.db.raw
+      .prepare(`
+        SELECT MAX(updated_at) AS latest FROM (
+          SELECT updated_at FROM problems UNION ALL
+          SELECT updated_at FROM methods UNION ALL
+          SELECT updated_at FROM innovations
+        )
+      `)
+      .get() as { latest: string | null }
+    return {
+      counts,
+      total: counts.problems + counts.methods + counts.innovations,
+      latest_updated_at: latest.latest,
+    }
   }
 
   /** 各库条目数。 */

@@ -883,6 +883,32 @@ Phase 2 留下的最大缺口是「243 篇 Asta 论文只有元数据」。已�
 3. **额度**：2000 页/天。剩余 66 篇已抓论文约 800 页，跨天即可完成；243 篇整体约 2900 页，按天推进；
 4. **embedding 来源决策**（§9.3 的三选一）——Domain Pack 的 `scoring` 与三库检索都等它。
 
+> 2026-09-17 用户裁定：**抓取不再继续**（不影响开发主线），全文抓取随时可续（脚本幂等）。
+
+### 9.5 P3-1 三库读写面（已完成）
+
+「三库能被会话里的 Agent 读写」是 idea 生成/打分的硬前置——在此之前只有 `scripts/*.mjs`
+能读写三库，会话内没有任何工具面。本轮补齐：
+
+| 交付物 | 内容 |
+| --- | --- |
+| 迁移 **v4** | 三张 **external-content FTS5 表**（`problems_fts`/`methods_fts`/`innovations_fts`，`tokenize='trigram'`）+ 每库三个同步触发器（INSERT/UPDATE/DELETE）+ 迁移时 `rebuild` 一次既有条目 |
+| `TriLibrary.search()` | ≥3 字符走 FTS5（查询串整体加双引号当短语，避免 `-`/`OR`/`*` 被解析为语法）；**<3 字符或 FTS 异常回退 `LIKE`**；支持 `store` / `sourcePaper` / `limit` 过滤，跨库按 problems → methods → innovations 分组 |
+| `TriLibrary.summary()` | 各库计数 + 合计 + 最近更新时间 |
+| `kb` 服务 | 新增 `upsertEntry` / `searchEntries` / `getEntry` / `entrySummary`（服务面即三库读写面） |
+| 工具行 `cv-agent-dsh/kb-entries` | `cvagent_kb_upsert_entry`（写，含参数校验与 ext JSON 解析）、`cvagent_kb_search`（读）、`cvagent_kb_summary`（总览：论文库/通道/提取数/三库计数）。**单列一行**是为了让角色矩阵按需授予——Reader 不该有三库写权限 |
+| 测试 | `tests/trilibrary.test.ts` 扩到 **13** 条（+7 条检索：中文 3 字命中、2 字回退、英文大小写不敏感、store/source/limit 过滤、FTS 语法字符不炸、触发器同步含 UPDATE 幽灵词清除、summary）；新增 `tests/kb-entries.test.ts` **6** 条（真实 ToolRuntime：目录契约、新建→检索→计数、合并语义、三类参数校验、过滤、summary 含论文面） |
+| 生产库实测 | `data/papers/metadata.db` 迁移到 v4，104 条条目索引一致（14/14、21/21、69/69）；`scripts/check-trilibrary-search.mjs` 逐条验证真实检索 |
+
+**新增的两条 L1 认知**：
+
+1. **中文检索必须用 trigram，且必须保留 LIKE 回退**——trigram 对 **2 字查询**无效（S4 spike 实测），
+   而「泛化」「部署」「鲁棒」这类两字词恰恰是最常用的检索词。只做 FTS5 会让 2 字查询
+   **静默返回空**，看起来像"库里没有"，实际是索引查不到。
+2. **external-content FTS5 + 触发器**比 contentless 更稳：`rebuild` 随时可从基表重建索引，
+   迁移里就能把既有条目一次补齐，不需要维护镜像表；代价是 UPDATE 触发器必须显式
+   `'delete'` 旧行再插新行，否则会留**幽灵词**（已由测试钉住）。
+
 ---
 
 ## 附录 A：本次已落地的仓库产物
