@@ -239,7 +239,11 @@ const lexicon = {
   ],
 }
 
-// ── 4. scoring：Deepfake 默认权重（v1.2 §18.4）─────────────────────────────
+// ── 4. scoring：Deepfake 默认权重（v1.2 §18.4）+ **按模式区分的阈值**─────────
+// keyword_only 的三个值来自真实语料标定（scripts/calibrate-similarity2.mjs，
+// 69 对「同内容被改写」正例 vs 69 对无关论文负例）：
+//   ≥0.10 → 召回 62%、误报 1/69；≥0.30 → 召回 10%、误报 0/69（此档基本是同文）。
+// 余弦口径的 0.85 直接套到 keyword 模式会严重漏判（实测负例最大仅 0.135）。
 const scoring = {
   dimensions: {
     novelty_problem: 30,
@@ -250,6 +254,11 @@ const scoring = {
   thresholds: {
     high_risk_similarity: 0.85,
     topk: 10,
+    keyword_only: {
+      related_similarity: 0.1,
+      near_duplicate_similarity: 0.3,
+      boundary_band: [0.1, 0.3],
+    },
   },
   suggestion_bands: {
     proceed: [75, 100],

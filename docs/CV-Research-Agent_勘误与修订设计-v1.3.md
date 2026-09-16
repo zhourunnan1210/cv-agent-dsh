@@ -955,7 +955,120 @@ node scripts/freeze-pack.mjs --reviewer "<评审人标识>" --bind
 
 ---
 
+## 11. P3-3 Idea 生成与打分：LLM 与确定性算法的分工（2026-09-17 需求细化）
+
+用户提出的问题：「idea 生成、打分其实需要 LLM 参与推理，现在是这样吗？」
+**事实**：此前一行实现都没有——`core/src/scoring/idea.ts` 只是契约，`mcp-server` 只是占位清单，
+`ideaScore` 服务与 `cvagent_idea_*` 工具都不存在。契约里已经留好 LLM 的接入点
+（`IdeaScorer` 是注入式接口；`rationale` / `SimilarPaper.reason` 的注释写明「LLM 复核产出」）。
+
+### 11.1 用户裁定（2026-09-17）
+
+| 决策 | 选择 |
+| --- | --- |
+| 生成方式 | **N 个不同视角的 Generator 子代理并行生成 → 语义合并去重**（而不是主 Agent 一次生成） |
+| 裁判方式 | **单个 LLM 裁判 + 检索证据**（裁判必须指名撞哪一条；数值由 core 算） |
+| 撞车范围 | **本地三库/论文库为主，相似度落在边界带时才外扩 Asta 外部检索** |
+
+### 11.2 分工表（谁做哪一步）
+
+| 环节 | 归属 | 理由 |
+| --- | --- | --- |
+| 候选召回（三库 + 论文库） | **确定性**（当前 FTS5，embedding 落地后升级） | 可复现、可审计；`retrieval_mode` 降级标记的所在 |
+| 相似度**数值** | **确定性**（见 §11.5 的两模式方案） | pack 的 `high_risk_similarity=0.85` 只有对确定性数值才有意义 |
+| idea 生成（问题×方法重组 / 找 gap） | **LLM**（N 个视角 Generator，委派） | 综合创造，规则写不出来 |
+| 语义撞车判定 | **LLM 裁判 + 检索证据** | 检索只给候选，判定要读内容 |
+| `feasibility`（实验可行性） | **LLM 裁判** | 依赖对 baseline/评测设计的判断 |
+| `rationale` / 撞车理由 | **LLM 裁判** | 自然语言解释 |
+| 加权聚合 + 档位映射 | **确定性纯函数（core）** | 分数必须可复算 |
+| idea 选型人工门 | **主 Agent 走 §4.3 三段式** | 子代理不能发起审批（E15），只能父层做 |
+
+### 11.3 三条硬规则
+
+1. **生成者 ≠ 裁判**：不同委派、独立上下文、互不可见对方材料。同一个 LLM 既生成又打分必然**自评自夸**（对自己的产出系统性给高分）。
+2. **裁判只做证据锚定的判定，数值由 core 算**：每条撞车必须给 `entry_id`/`paper_id` + 撞车理由 + 判定（碰撞/不碰撞）；四个维度分值由确定性函数从「检索证据 + 裁判判定」算出。
+3. **报告自包含、可复算**：`ScoringReport` 必须携带复算所需的全部输入（各维度的检索命中与分数、裁判的逐维判定与理由、外扩检索是否发生、检索模式），使得「为什么这条 idea 得 82 分」在事后可**逐位重算**，且同一输入两次打分结果一致。
+
+### 11.4 执行形态（委派图）
+
+```
+cvagent_idea_generate
+  └─ 视角 = 冻结 pack 的 problems × 方法范式（领域相关内容都在 pack 里，原则六）
+     ├─ spawn Generator#1（视角 A：toolFilter = kb 检索面；outputSchema = IdeaCandidate[]）
+     ├─ spawn Generator#2（视角 B）
+     └─ … N 个并发
+  └─ 合并去重：statement 归一化 + 视角标记保留（记为 candidate.lens）
+
+cvagent_idea_score
+  ├─ 1) ideaScore 服务：确定性召回（problems/methods/论文库）+ 相似度估计 + 组合共现检测
+  ├─ 2) 边界带判定 → 命中则外扩 Asta（外部检索，结果标记 escalated）
+  ├─ 3) spawn Judge 子代理（outputSchema = 逐维判定 + 证据 ID + 理由）——**与 Generator 无共享上下文**
+  ├─ 4) ideaScore 服务：确定性聚合（权重来自冻结 pack）→ ScoringReport
+  └─ 5) 主 Agent 呈递 gate（proceed / revise / abandon 三档）
+```
+
+### 11.5 关键发现：相似度标定必须自带（否则阈值失效）
+
+现有检索**给不出 [0,1] 的相似度**：FTS5 的 `rank` 是无界负值（bm25 变体），`LIKE` 回退根本没有分数。
+而 pack 冻结的 `high_risk_similarity=0.85`、边界带、三档映射都要求可比数值。因此打分器必须自带有标定的估计：
+
+| 模式 | 相似度来源 | 标记 | 说明 |
+| --- | --- | --- | --- |
+| `vector` | embedding 余弦 ∈ [0,1] | 首选 | 需先定 embedding 来源（§9.3 三选一，仍未定） |
+| `keyword_only` | **核心自带**：字符 trigram Jaccard（中文自动退化为纯 trigram，避免整句当一个 token） | **降级**（`retrieval_mode: 'keyword_only'`） | 零依赖、可复现；对同义改写盲（见下），但数值有界可比 |
+
+**用真实语料做的标定**（`scripts/calibrate-similarity2.mjs`：69 对「Analyst 条目 ↔ 其来源论文的创新点原文」当正例，
+69 对「条目 ↔ 其它论文的创新点」当负例）：
+
+| 阈值 | 正例召回 | 负例误报 |
+| --- | --- | --- |
+| ≥0.10 | **62%** | 1/69 |
+| ≥0.15 | 30% | 0/69 |
+| ≥0.30 | 10% | 0/69（此档基本是「同文」） |
+
+正例分布 p50=0.124 / p90=0.271 / max=0.548；负例 p50=0.040 / p99=0.094 / max=0.135。
+
+→ 两条结论：
+
+1. **阈值必须按模式区分**：把余弦口径的 `0.85` 套到 keyword 模式会**严重漏判**（负例最大才 0.135）。
+   pack 因此同时给出两套：`high_risk_similarity: 0.85`（vector）+ `keyword_only:
+   { related_similarity: 0.10, near_duplicate_similarity: 0.30, boundary_band: [0.10, 0.30) }`。
+2. **keyword 模式有致命盲区，且是量化的**：语义相同但措辞不同的一对陈述，相似度实测 **0.0**
+   （「深伪检测的跨数据集泛化能力不足」vs「检测器在未见生成方法与分布偏移下性能下降」）。
+   检索侧**永远召不回**它们——所以「语义撞车」只能由 LLM 裁判负责，这不是可选优化，
+   而是 §11.2 分工表里裁判存在的**根本理由**。测试已把该盲区如实钉住
+   （`core/tests/score.test.ts` 的「同义改写相似度为 0」用例）。
+
+→ 结论：**Phase 3 可以先在 `keyword_only` 模式下跑起来**（阈值/档位/边界带都有效且是实测标定的），
+embedding 到位后同一套契约自动升级到 `vector` 模式。embedding 决策从「阻塞项」降级为「质量升级项」——
+它现在的收益是**把裁判的召回负担接过去一部分**，而不是让系统能跑。
+
+### 11.6 待定参数（实现时给默认值，可在 pack 里调）
+
+| 参数 | 默认 | 说明 |
+| --- | --- | --- |
+| `generators` | `min(problems 数, 6)` | 视角数 N；越多越多样，成本 ≈ N× |
+| `ideas_per_generator` | 3 | 每个视角产出的候选数 |
+| `boundary_band` | `[0.70, 0.90]` | 相似度落在此区间才外扩 Asta（低于=不撞，高于=直接判撞） |
+| `max_ideas_scored` | 10 | 单轮打分上限（控制裁判成本） |
+| `judge_model` | 与 Orchestrator 同路由 | 若后续要更强的独立裁判，可在此处换模型 |
+
+### 11.7 P3-3a 已交付（本轮）
+
+| 交付物 | 内容 |
+| --- | --- |
+| 契约扩展（`core/src/scoring/idea.ts`） | `CollisionEvidence`（ref_id / source / excerpt / similarity / verdict / reason）、`DimensionScore`（`retrieval_baseline` + `final` + `adjusted_by_judge`）、`ScoringReport` 追加 `dimension_trace` / `evidence` / `weights_snapshot` / `escalated_external` / `judged_by` / `judged_at`；`IdeaCandidate` 追加 `lens` / `generated_by`；`ScoringThresholds` 支持**按模式区分**阈值 |
+| 确定性算法（`core/src/scoring/score.ts`） | `lexicalSimilarity`（trigram Jaccard，中文自适应退化）、`deriveEvidence`（基线分 + 边界带）、`applyJudgment`（裁判判定 → 维度分，**裁判不能凭空报数**：撞车封顶 20、表面相似剔除、可行性采用裁判值且越界回落）、`totalScore`、`classifyBand`、`classifyRisk`（按模式取阈值）、**`recomputeTotal`**（报告自包含可复算的可执行判据） |
+| 标定脚本 | `scripts/calibrate-similarity.mjs`（第一轮，共享论文当正例——**证明该代理指标无效**）、`calibrate-similarity2.mjs`（第二轮，paraphrase 真值，产出上表阈值） |
+| 测试 | `core/tests/score.test.ts` **19 条**：相似度有界/对称/归一化不变、中文语序、**同义改写盲区（=0）如实钉住**、基线分定义（无证据不给满分）、边界带三态、backend_score 优先、裁判四类影响、权重与档位、风险级按模式、报告可复算（换权重快照结果随之变化） |
+
+**下一增量（P3-3b）**：`ideaScore` 服务（preset，读 `kb`）把上面的纯函数接到真实检索上；
+`cvagent_idea_generate`（N 视角 Generator + 合并去重）与 `cvagent_idea_score`（召回 → 边界带外扩 Asta → 委派裁判 → 聚合）；两者各配「假 subagents 提供者」的契约测试（同 `kb-extract` 的做法）。
+
+---
+
 ## 附录 A：本次已落地的仓库产物
+
 
 ```
 D:\Code\VScodeRepo\dsh-plugin\          ← cv-research-agent monorepo 根

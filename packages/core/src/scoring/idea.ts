@@ -24,6 +24,15 @@ export interface IdeaCandidate {
   /** 建议的 1–3 篇 baseline 论文 ID。 */
   readonly baselines: readonly string[]
   /**
+   * 产出该候选的**视角**（P3-3：N 个 Generator 各持一个视角并行生成）。
+   *
+   * 记录视角是为了审计与去重：合并后仍要知道「这条 idea 是从哪个角度想出来的」，
+   * 以及「哪些视角根本没产出」（空视角本身是信息：可能该方向已被做透）。
+   */
+  readonly lens?: string
+  /** 产出该候选的 Generator 标识（委派 id 或角色名），供审计。 */
+  readonly generated_by?: string
+  /**
    * 人工授权标记。
    *
    * **为什么需要这个字段**（勘误 E15）：委派给子代理时，其审批策略被 dsh
@@ -146,24 +155,76 @@ export interface SimilarPaper {
 }
 
 /**
+ * 一条撞车证据（P3-3：**裁判必须证据锚定**）。
+ *
+ * 设计动机：如果让 LLM 直接吐一个"新颖度 78 分"，分数既不可复现也无法审计
+ * （同一 idea 两次打分不同，pack 里的阈值与权重全部失去意义）。因此拆成：
+ * 检索给出候选与相似度 → 裁判对**每一条候选**给出判定与理由 → 数值由 core 算。
+ */
+export interface CollisionEvidence {
+  /** 撞到的条目/论文 ID（三库条目用 entry_id，论文用 paper_id）。 */
+  readonly ref_id: string
+  /** 命中来源：哪个库，或论文库。 */
+  readonly source: 'problems' | 'methods' | 'innovations' | 'papers'
+  /** 检索侧的陈述片段（供人复核"它到底是不是同一件事"）。 */
+  readonly statement_excerpt: string
+  /** 确定性的相似度估计（∈[0,1]，语义由 `retrieval_mode` 决定，见 §11.5）。 */
+  readonly similarity: number
+  /** 是否来自外扩的外部检索（Asta），而非本地库。 */
+  readonly external: boolean
+  /** 裁判判定：是否构成实质撞车。 */
+  readonly verdict: 'collision' | 'superficial' | 'unjudged'
+  /** 裁判给出的理由（自然语言，LLM 产出；`unjudged` 时为空串）。 */
+  readonly reason: string
+}
+
+/**
+ * 维度取值 = 检索证据 + 裁判判定 → 确定性函数算出的分数。
+ *
+ * `retrieval_baseline` 与 `final` 分开记录，是为了让"裁判调整了多少"可见：
+ * 裁判可以提升风险（检索漏掉的语义撞车）或降低风险（检索命中的其实只是表面相似），
+ * 但两者都留痕，且 `final` 由 core 从证据重算得出，不是裁判直接报的数。
+ */
+export interface DimensionScore {
+  readonly retrieval_baseline: number
+  readonly final: number
+  /** 裁判是否调整过该维度（未调整时 final === retrieval_baseline）。 */
+  readonly adjusted_by_judge: boolean
+}
+
+/**
  * 打分报告（v1.2 §6.2 / §10）。
  *
  * 注意：`degraded` 字段是相对 v1.2 §10 接口的**新增项**。v1.2 §19 要求
  * 「向量嵌入服务不可用 → 撞车分析标记 `degraded: keyword_only`」，
  * 但 §10 的 `ScoringReport` 没有承载该标记的字段。此处补上，
  * 否则降级状态会在报告层丢失。
+ *
+ * P3-3 追加**自包含**要求：报告必须携带复算所需的一切（逐维证据、裁判判定与理由、
+ * 外扩检索是否发生、检索模式、权重快照），使分数可逐位重算、可审计。
  */
 export interface ScoringReport {
   readonly idea_id: string
   /** 总分 0–100。 */
   readonly total: number
   readonly dimensions: ScoringDimensions
+  /** 逐维度的「检索基线 → 最终值」轨迹（P3-3 新增）。 */
+  readonly dimension_trace?: Readonly<Record<keyof ScoringDimensions, DimensionScore>>
+  /** 撞车证据清单（P3-3 新增）：裁判逐条判定的依据。 */
+  readonly evidence?: readonly CollisionEvidence[]
+  /** 本次打分使用的权重快照（来自冻结 pack，P3-3 新增；便于事后复算）。 */
+  readonly weights_snapshot?: ScoringDimensions
   readonly risk_level: CollisionRisk
   readonly similar_papers: readonly SimilarPaper[]
   readonly suggestion: IdeaSuggestion
   readonly rationale: string
   /** 撞车分析所依据的检索模式；非 `vector` 时结论可信度下降。 */
   readonly retrieval_mode: 'vector' | 'keyword_only'
+  /** 是否触发了外部（Asta）外扩检索（P3-3 新增）。 */
+  readonly escalated_external?: boolean
+  /** 裁判标识与时间（P3-3 新增，审计用）。 */
+  readonly judged_by?: string
+  readonly judged_at?: string
 }
 
 /**
@@ -177,14 +238,42 @@ export interface IdeaScorer {
   score(idea: IdeaCandidate, kb: KnowledgeBase): Promise<ScoringReport>
 }
 
+/**
+ * 相似度阈值。
+ *
+ * ⚠️ **阈值必须按检索模式区分**（P3-3 实测，勘误 §11.5）：`high_risk_similarity`
+ * 是给 embedding 余弦定的口径（同义不同词也能到 0.85+）；字符 trigram Jaccard 的
+ * 尺度完全不同——用真实语料标定（`scripts/calibrate-similarity2.mjs`，69 对
+ * 「同内容但被改写过」的正例 vs 69 对无关论文）：
+ *
+ * | 阈值 | 正例召回 | 负例误报 |
+ * | --- | --- | --- |
+ * | ≥0.10 | 62% | 1/69 |
+ * | ≥0.15 | 30% | 0/69 |
+ * | ≥0.30 | 10% | 0/69（此档基本是"同文"） |
+ *
+ * 因此 keyword_only 模式另给一套：**相关候选 0.10 / 近似同文 0.30 / 边界带 [0.10, 0.30)**。
+ * 把余弦口径的 0.85 直接套到 keyword 模式上，会**严重漏判撞车**（实测负例最大才 0.135）。
+ */
+export interface ScoringThresholds {
+  /** 组合判定的相似度阈值（**vector 模式**口径）。 */
+  readonly high_risk_similarity: number
+  readonly topk: number
+  /** keyword_only（字符 trigram）模式的角色与阈值；缺省时回落到 `high_risk_similarity`。 */
+  readonly keyword_only?: {
+    /** 相关候选阈值（召回优先）：用于「可能撞车，交给裁判」的召回门。 */
+    readonly related_similarity: number
+    /** 近似同文阈值（高精度）：此档以上可直接判撞，不必等裁判。 */
+    readonly near_duplicate_similarity: number
+    /** 边界带：落在其中说明检索判据不足 → 触发外部（Asta）外扩检索。 */
+    readonly boundary_band: readonly [number, number]
+  }
+}
+
 /** 打分维度权重配置，来自 Domain Pack 的 `scoring.yml`（v1.2 §18.4）。 */
 export interface ScoringConfig {
   readonly dimensions: ScoringDimensions
-  readonly thresholds: {
-    /** 组合判定的相似度阈值。 */
-    readonly high_risk_similarity: number
-    readonly topk: number
-  }
+  readonly thresholds: ScoringThresholds
   readonly suggestion_bands: {
     readonly proceed: readonly [number, number]
     readonly revise: readonly [number, number]
