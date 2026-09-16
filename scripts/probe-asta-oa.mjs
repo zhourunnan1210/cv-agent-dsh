@@ -1,4 +1,7 @@
-/** 一次性探查：打印 get_paper_batch 调用的完整结果对象结构（含 structuredContent？）。 */
+/**
+ * 一次性探查：get_paper_batch 能否返回 openAccessPdf / isOpenAccess（全文获取的路由依据）。
+ * 注意：字段组合不被接受时 Asta 服务端**可能挂起**（P2-5 的 abstract 教训），故设 60s 超时并只取 3 个 ID。
+ */
 import { readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
@@ -39,11 +42,11 @@ const mcpClient = await loadPackage('@deepseek-ai/dsh-mcp-client')
 const app = new cordis.Context()
 let runtime
 await app.plugin({
-  name: 'probe5-host',
+  name: 'oa-host',
   async apply(ctx) {
     ctx.plugin(asPlugin(systemPromptModule))
     await ctx.plugin({
-      name: 'probe5-tools',
+      name: 'oa-tools',
       inject: ['systemPrompt'],
       apply(toolsCtx) { runtime = new tools.ToolRuntime(toolsCtx, tools.Config ? tools.Config({}) : {}) },
     })
@@ -60,34 +63,26 @@ const astaRow = await app.plugin(
   },
 )
 
-const call = await runtime.execute({
-  callId: 'probe5-a',
-  name: 'mcp__asta__get_paper_batch',
-  arguments: { ids: ['CorpusId:261276979', 'CorpusId:247793039', 'CorpusId:215416146'], fields: 'title,year,venue,externalIds' },
-  signal: AbortSignal.timeout(60000),
-})
-console.log('call keys:', Object.keys(call ?? {}))
-console.log('value keys:', Object.keys(call?.value ?? {}))
-console.log('content length:', call?.value?.content?.length)
-const text = call?.value?.content?.[0]?.text
-console.log('text length:', String(text ?? '').length)
-console.log('--- text 全文 ---')
-console.log(String(text ?? ''))
-console.log('--- structuredContent ---')
-console.log(JSON.stringify(call?.value?.structuredContent ?? null).slice(0, 800))
-
-const snippet = await runtime.execute({
-  callId: 'probe5-b',
-  name: 'mcp__asta__snippet_search',
-  arguments: { query: 'audio deepfake detection', limit: 100 },
-  signal: AbortSignal.timeout(120000),
-})
-const sText = snippet?.value?.content?.[0]?.text
-let parsed
-try { parsed = JSON.parse(String(sText)) } catch {}
-console.log('\n=== snippet_search limit=100')
-console.log('text length:', String(sText ?? '').length)
-console.log('data length:', Array.isArray(parsed?.data) ? parsed.data.length : '(not array)')
-console.log('distinct corpusIds:', Array.isArray(parsed?.data) ? new Set(parsed.data.map((d) => d?.paper?.corpusId)).size : 0)
+// 取库里 3 篇 asta 论文的 CorpusId（从 paper_id 的 ss: 前缀或 externalIds 无法直接拿，
+// 这里改用已知的 3 个标题搜索得到的 S2 id）
+const ids = ['CorpusId:261276979', 'CorpusId:247793039', 'CorpusId:215416146']
+for (const fields of ['title,year,externalIds,openAccessPdf,isOpenAccess', 'title,isOpenAccess']) {
+  console.log(`\n=== fields=${fields}`)
+  try {
+    const call = await runtime.execute({
+      callId: `oa-${fields.length}`,
+      name: 'mcp__asta__get_paper_batch',
+      arguments: { ids, fields },
+      signal: AbortSignal.timeout(60000),
+    })
+    const structured = call?.value?.structuredContent?.result
+    const text = call?.value?.content?.[0]?.text
+    console.log('isError:', call?.isError)
+    console.log('structured 条数:', Array.isArray(structured) ? structured.length : '(非数组)')
+    console.log('sample:', JSON.stringify(Array.isArray(structured) ? structured[0] : String(text).slice(0, 400)).slice(0, 700))
+  } catch (error) {
+    console.log('调用异常：', error.message)
+  }
+}
 await astaRow.dispose()
 process.exit(0)

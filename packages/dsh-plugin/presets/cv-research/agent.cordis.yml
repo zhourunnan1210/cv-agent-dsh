@@ -216,6 +216,36 @@
 # carries whatever the deployment registered globally (repository plugins).
 - id: skill-filesystem
   name: '@deepseek-ai/dsh-skill-filesystem'
+  config:
+    # Root discovery is decoupled from the session workspace here.
+    #
+    # By default this provider only scans `<session projectRoot>/.dsh/skills`
+    # (rank 100, projectRoot = nearest ancestor with .git, derived from the
+    # HOST's cwd). A research project living in another directory therefore
+    # gets NO skills at all — silently, with no error. That is the exact
+    # failure mode this project refuses to ship, so the two roots below are
+    # pinned by environment instead.
+    #
+    # `customSkillDirs` entries are resolved with `path.resolve(root)`, i.e.
+    # against the HOST process's cwd — not the plugin and not the session
+    # workspace. scripts/start-dsh-web.ps1 sets both variables to absolute
+    # paths AND pins cwd to the repo root, so the env var wins when set and
+    # the relative fallback resolves correctly when it is not.
+    #
+    #   CV_PROJECT_SKILLS_DIR  third-party skills archived in the repo (.dsh/skills)
+    #   CV_PLUGIN_SKILLS_DIR   skills owned by this plugin package (packages/dsh-plugin/skills)
+    #
+    # ⚠️ The `|| '<relative path>'` fallback is NOT cosmetic — never write a bare
+    # `!!js process.env.X` here. Measured against the real Config: this schema
+    # COERCES an `undefined` entry to `null` and ACCEPTS it, so the failure is
+    # not at validation time — the provider's constructor then calls
+    # `path.resolve(null)` and throws, which fails the row and takes the whole
+    # preset mount down with it. (E22 recorded the same blast radius for
+    # mcp-client's `headers`, where `undefined` failed schema validation
+    # outright: the mechanism differs, the consequence does not.)
+    customSkillDirs:
+      - !!js process.env.CV_PROJECT_SKILLS_DIR || '.dsh/skills'
+      - !!js process.env.CV_PLUGIN_SKILLS_DIR || 'packages/dsh-plugin/skills'
 
 - id: tool-skill
   name: '@deepseek-ai/dsh-tool-skill'

@@ -45,8 +45,8 @@ Scientific Corpus Tool，Semantic Scholar 图谱）。
 **两处能力没有随 Asta 回来**，是明确接受的损失：
 
 - **无全文 / PDF 读取**：Asta 只给元数据与正文片段。全文获取由 `paper-fetch`
-  skill 承担（已归档在仓库 `.dsh/skills/paper-fetch/`），解析后续接 MinerU
-  （勘误 §5.5 的 S3）。
+  skill 承担（**由本插件包自己拥有**，在 `packages/dsh-plugin/skills/paper-fetch/`，
+  随包分发），解析后续接 MinerU（端点与限流见 `docs/mineru-api.md`）。
 - **无 `auto_cite` / `sci_draw`**：写作阶段的引用插入与科研绘图一并移除。
 
 契约与角色矩阵已同步更新：`packages/dsh-plugin/src/tools/names.ts` 的

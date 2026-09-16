@@ -40,6 +40,8 @@ const limitN = Number(opt('--limit') ?? 0)
 const chunkSize = Number(opt('--chunk') ?? 20)
 const dryRun = flag('--dry-run')
 const resume = flag('--resume')
+/** 定向补收一个已提交的 batch（哪怕 state 里已标 done）：代理/网络故障后的补救入口。 */
+const resumeBatch = opt('--resume-batch')
 
 // ── 环境（.env.local 读取；已存在的环境变量优先）────────────────────────
 try {
@@ -149,8 +151,10 @@ async function finalizeChunk(chunk) {
   let failed = 0
   const now = new Date().toISOString()
   const byName = new Map(chunk.items.map((item) => [item.name, item]))
+  const byDataId = new Map(chunk.items.map((item) => [item.paperId, item]))
   for (const file of result.files) {
-    const item = byName.get(file.fileName)
+    // 对账优先用 data_id（实测原样回传，不受文件名 sanitize/截断影响），再退到文件名
+    const item = (file.dataId === undefined ? undefined : byDataId.get(file.dataId)) ?? byName.get(file.fileName)
     const paperId = item?.paperId
     if (item === undefined) {
       console.warn(`  ⚠ 未知文件：${file.fileName}`)
@@ -210,6 +214,24 @@ async function finalizeChunk(chunk) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+// ── 定向补收一个 batch（`--resume-batch <id>`）─────────────────────────────
+// 适用场景：MinerU 侧已经 done，但我们这侧因网络/代理故障没能下载落库
+// （state 里的 chunk 已被标 done，常规 --resume 不会再碰它）。
+if (resumeBatch !== undefined) {
+  const chunk = state.chunks.find((item) => item.batchId === resumeBatch)
+  if (chunk === undefined) {
+    console.error(`state 里没有 batch ${resumeBatch}（items 无法对账）。`)
+    database.close()
+    process.exit(2)
+  }
+  chunk.status = 'submitted'
+  await saveState()
+  const { ok, failed } = await finalizeChunk(chunk)
+  database.close()
+  console.log(`\nRESUME BATCH OK —— batch ${resumeBatch}：成功 ${ok}，失败 ${failed}`)
+  process.exit(0)
 }
 
 // ── 遗留 chunk 的处置 ───────────────────────────────────────────────────────

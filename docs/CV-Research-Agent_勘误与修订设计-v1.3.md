@@ -60,6 +60,8 @@
 | E23 | §8.1 MinerU 链路 | `docs/mineru-api.md` §4：提交任务类限流 300 次/分钟 | **文档口径偏松**。实测 `POST /file-urls/batch` 在数分钟内第 3 次提交即 **HTTP 429**（前两块上传各耗时约 1 分钟，绝非 300/分的量级），说明该端点有比公开表格更紧的频控 | **L1**（批量解析实测） | 提交层必须**退避重试 + 块间停顿**（5s→80s 指数退避，块间 6s）；`batch-parse.mjs` 已实现 |
 | E24 | （工程细节，未涉及） | — | **paper_id 不能直接当路径**：Zotero 导入的 `local:...` 条目带 `:`，在 Windows 上是非法路径字符，`mkdir` 抛 `ENOENT` 并**直接崩掉整个批量进程**——一篇论文毁掉已提交的 106 篇进度。同理标题派生的 ID 可能超长（MAX_PATH）。**续发形态**：截断到 100 字符时若正好落在空格上，会生成「尾随空格目录名」——**Node 的 `statSync` 读得到，PowerShell / 资源管理器读不到**（`Get-ChildItem -Recurse` 直接报「找不到路径」），完整性检查因此全绿而用户实际打不开目录 | **L1**（批量解析 + 目录遍历双重实测） | 三条纪律：① 落盘目录走 `safeDirName()`（非法字符→`_`、逐段截断 100 字符**并去尾随空格/点**，DOI 的 `/` 保留以兼容既有布局），**DB 里的 `md_path` 才是契约**；② 逐篇 `try/catch`，单篇失败只标 `parse_channel='failed'`，不得终止整批；③ 完整性检查必须用**与用户相同的读取路径**（PowerShell）复核，不能只看 Node |
 | E25 | （工程细节，未涉及） | — | 额度账本的公开面是 **`quota.status`**（`QuotaStatus{date,usedPages,limit,overHighPriority,warning}`），不是 `quota.usedPages` 直接属性；直接取会得到 `undefined` 并让预算门静默失效 | **L1** | 记录备案（`batch-parse.mjs` 已按 `quota.status` 取值） |
+| E26 | §8.1 MinerU 链路 / 环境前置 | 隐含假设：MinerU 是「国内服务」，只要 `NO_PROXY` 里放了 `mineru.net` 就与代理无关 | **不成立**。MinerU 一条解析链路跨**三个**域名，漏掉后两个，代理一挂就在那一步全废，而 MinerU 侧其实已经解析完成：① API `mineru.net`；② **签名上传落在 `mineru.oss-cn-shanghai.aliyuncs.com`**（漏掉 → 上传 PUT `ECONNREFUSED 127.0.0.1:10808`）；③ **产物 zip 落在 `cdn-mineru.openxlab.org.cn`**（漏掉 → 7 篇全部「fetch failed」，而 batch 状态其实是 `done`）。**2026-09-17 实测**：清掉代理变量后 API 304ms、OSS PUT 249ms，均 HTTP 200——三个域名都无需代理 | **L1**（代理掉线期间实测，两条链路各命中一次） | `NO_PROXY` 必须含 `mineru.net,aliyuncs.com,openxlab.org.cn`（`scripts/start-dsh-web.ps1` 与各脚本默认值已同步）；新增 `batch-parse.mjs --resume-batch <id>` 做**定向补收**（MinerU 侧 done、本地未落库时的补救入口，不重复提交） |
+| E27 | §2.1 MinerU 批量接口 | 用文件名对账（`extract_result[].file_name`） | 可用但**不必要地脆弱**：文件名要经过我们的 sanitize 与截断。实测 `extract_result[]` **原样回传提交时的 `data_id`**（2026-09-17）——它是我们自己给的业务标识，天然唯一、不受文件名规则影响 | **L1** | `MineruFileResult` 增 `dataId`；`batch-parse.mjs` 对账**优先 `data_id`、回退 `file_name`** |
 
 ---
 
@@ -621,7 +623,7 @@ dsh --profile cvspike --port 0 --no-open                              # 启动�
 | 1 | S2 端到端：真实子代理的 `toolFilter` / `outputSchema` 行为 | 需要 web profile 加载 `cv-agent-dsh` 的委派工具；当前宿主进程正承载本次对话 | bundle 装载已验证（§5.4），待 `cv-agent-dsh` 首批工具落地后由我实跑 |
 | 2 | S6 端到端：`ask_user_question` 的门控呈递行为 | 同上 | 同上 |
 | 3 | S3 MinerU 本地吞吐 | 需要 4090 机器 + MinerU 部署 | 与 dsh 侧并行，不阻塞 |
-| 4 | S4 sqlite-vec 压测 | 需要选定 embedding 维度 | Phase 3 前 |
+| 4 | S4 sqlite-vec 压测 | 需要选定 embedding 维度 | ✅ **已解决（2026-09-17，`scripts/spike-s4-retrieval.mjs`）**：结论是我们这个规模**不需要向量索引**（1000 条 × 768 维暴力全扫 **1.19ms/次**，Phase 3 的几百条更不在话下）；FTS5 可用，中文检索走 `tokenize='trigram'` 且**查询串须 ≥3 字符**（2 字中文查不到，实测边界）；`node:sqlite` 加载扩展需 `new DatabaseSync(path, { allowExtension: true })`（sqlite-vec 技术上可加载）。**剩下的是 embedding 来源决策，不是索引决策**（见 §9） |
 | 5 | S5 MCP 封装 | 依赖 core 层有可封装的接口 | Phase 1 后 |
 | 6 | ai4scholar.net 真实调用与计费标定 | 需要 API key 与额度 | Phase 2 前（影响 §20 成本模型） |
 
@@ -816,6 +818,70 @@ Analyst 子代理从 21 篇提取归纳出 **104 条**三库条目（含试点�
   （`source_papers`），90 条已回填 `related_*_ids` 关联；
 - **遗留**（不阻塞 Phase 3）：243 篇 Asta 论文只有元数据（`pdf_status='pending'`），
   全文获取需接 `paper-fetch`/Zotero 通道后二次批量解析；1 条标题命中待人工复核。
+
+### 8.6 待执行：重启后的真实端到端验收（§5.5 第 1、2 项的收口）
+
+Phase 2 的提取链路是用**假 subagents 提供者**做契约测试的（6 条），真实委派行为还没在
+`cv-research` preset 里跑过。原因是 E21：新 exports（`./kb-extract`）与模块代码都被运行中的
+宿主缓存，**必须重启一次宿主**才能让该行生效。
+
+重启后按此清单收口（一轮即可，预计 10 分钟）：
+
+| # | 步骤 | 通过判据 |
+| --- | --- | --- |
+| 1 | 新会话选 **CV Research Orchestrator**，看工具目录 | 含 7 个 `cvagent_*`（5 状态 + `kb_import_paper` + `kb_extract`）与 8 个 `mcp__asta__*` |
+| 2 | 对一篇**已解析**论文调用 `cvagent_kb_extract` | 返回结构化三字段；`paper_extractions` 新增/更新该 paper_id |
+| 3 | 验证上下文洁净 | 主 Agent 上下文里**没有论文正文**（只有结构化结果）；子代理会话历史不含父会话 |
+| 4 | 验证契约刚性 | 把 `outputSchema` 必需字段之一去掉重跑，子代理应报错而非回自由文本 |
+| 5 | 验证隔离红线 | 子代理目录里看不到 `mcp__asta__snippet_search`、`read_*`（只有 `read`） |
+| 6 | 门控呈递（S6） | `cvagent_state_advance` 产出待决 gate → 由 `ask_user_question` 呈递 → `cvagent_gate_resolve` 落盘；confirm 模式下不决议就不推进 |
+
+---
+
+## 9. Phase 3 起步（2026-09-17）
+
+### 9.1 全文获取：paper-fetch skill + 回填桥
+
+Phase 2 留下的最大缺口是「243 篇 Asta 论文只有元数据」。已按用户决定落地为**三层分工**：
+
+| 层 | 归属 | 职责 |
+| --- | --- | --- |
+| 解析+下载 | `packages/dsh-plugin/skills/paper-fetch/`（**插件自有 skill**，v0.14.1，Python 3 stdlib，随包 `files: ["skills"]` 分发） | Unpaywall → Semantic Scholar → arXiv → Europe PMC/PMC → bioRxiv/medRxiv；Sci-Hub 按本仓库策略**默认关闭**；`%PDF` 魔数 + 50MB 上限校验；batch 模式 + 幂等文件名 |
+| 回填桥 | `scripts/fetch-fulltext.mjs`（`--prepare` / `--ingest` / `--status`） | 从 `metadata.db` 生成 DOI 清单 → 读 paper-fetch 的 JSON envelope → 映射回 `paper_id` → 写 `pdf_path`/`pdf_status`（落库前**再校验一次魔数**） |
+| 解析 | `scripts/batch-parse.mjs` + MinerU | 与 Phase 2 完全同一套（额度台账、断点续跑、`--resume-batch` 定向补收） |
+
+- skill 根由 `skill-filesystem` 的 `customSkillDirs` 钉死（`CV_PROJECT_SKILLS_DIR` / `CV_PLUGIN_SKILLS_DIR`），与「会话工作区」解耦——否则换工作区跑项目会**静默没有 skill**。
+- 子进程 I/O 一律**重定向到文件**而非管道：本 harness 沙箱禁止用管道捕获子进程输出（Node `child_process` 默认 `stdio:'pipe'` 会 EPERM）。
+- ⚠️ `UNPAYWALL_EMAIL` 未配置 → Unpaywall（首选 OA 源）被跳过，只剩 S2/arXiv/PMC/bioRxiv 四条。
+
+### 9.2 本轮实测结果
+
+| 指标 | 结果 |
+| --- | --- |
+| 候选 | 243 篇（全部有 DOI 或 arXiv；170 篇只有 DOI） |
+| 已下载 | **73 篇**（130MB，全部通过魔数校验） |
+| 中断原因 | **代理 `127.0.0.1:10808` 掉线**（端口不可达，curl 000）——arXiv/Unpaywall/S2/出版商全部需要代理，故中止；脚本幂等，代理恢复后重跑即续传 |
+| 阻断期间完成的另一件事 | 代理掉线**不影响 MinerU**（国内直连），因此顺手把已下载的切片跑了一遍解析验证 |
+| 解析验证 | 7 篇（限额预算内的切片）**全部成功**，`md_path` 100% 可解析 → 证明 **paper-fetch 下载的出版商 PDF 与 arXiv PDF 都能喂给 MinerU** |
+| 解析总量 | 147 → **154 篇**；额度 1990/2000 页（今日配额基本用尽） |
+| 待抓/待解析 | 170 篇待抓（需代理）；66 篇已抓待解析（需额度） |
+
+### 9.3 S4 检索层结论（对应 §5.5 第 4 项）
+
+`scripts/spike-s4-retrieval.mjs` 的结论把「向量索引」这个不确定性**去掉了**：
+
+- **我们不需要向量索引**：1000 条 × 768 维暴力全扫 **1.19ms/次**（384 维 0.75ms）。Phase 3 的三库规模（当前 104 条）远在此之下，暴力扫描足够；
+- **FTS5 可用**，中文检索走 `tokenize='trigram'`（实测 3 字/4 字查询命中，**2 字查询查不到**——trigram 的硬限制）；
+- `node:sqlite` 加载扩展需显式 `{ allowExtension: true }`（sqlite-vec 技术上可加载，但不是必需）。
+
+→ **剩下的决策是「embedding 从哪来」，不是「用什么索引」**。当前部署只有 `deepseek-official` 对话模型，无 embedding 服务，故三选一：① 本地 ONNX 小模型（如 bge-small-zh，零 API 成本，需一次性下载）；② 外部 embedding API（需 key，代理已具备）；③ 暂不上向量，先用 FTS5 trigram + 三库结构化字段（零依赖，语义召回弱）。
+
+### 9.4 进 Phase 3 前的待办
+
+1. **代理恢复** → 跑完剩余 170 篇全文抓取（`--prepare` → paper-fetch → `--ingest`）；
+2. **宿主重启一次** → 让 `cvagent_kb_extract` 行与新的 skill 根配置生效（E21），随后按 §8.6 清单收口真实端到端；
+3. **额度**：2000 页/天。剩余 66 篇已抓论文约 800 页，跨天即可完成；243 篇整体约 2900 页，按天推进；
+4. **embedding 来源决策**（§9.3 的三选一）——Domain Pack 的 `scoring` 与三库检索都等它。
 
 ---
 

@@ -32,6 +32,9 @@ data/
 tmp/
 *.log
 logs/
+# Python 字节码（skill 里的 .py 脚本跑一次就会生成）
+__pycache__/
+*.pyc
 # 隔离的 DSH_HOME（用于在不影响运行中宿主的前提下做 bundle 装载验证）
 .spike-dsh-home/
 

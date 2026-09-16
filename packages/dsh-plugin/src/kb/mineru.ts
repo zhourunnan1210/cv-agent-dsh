@@ -39,6 +39,11 @@ export interface MineruClientOptions {
 /** 单个文件的解析结果。 */
 export interface MineruFileResult {
   readonly fileName: string
+  /**
+   * 提交时带上的 `data_id`（业务侧标识）。**实测会原样回传**（2026-09-17），
+   * 因此它比 file_name 更可靠：文件名可能被 sanitize/截断/重名，data_id 是我们自己给的。
+   */
+  readonly dataId?: string
   readonly state: 'pending' | 'running' | 'converting' | 'done' | 'failed'
   readonly errMsg?: string
   readonly fullZipUrl?: string
@@ -77,6 +82,8 @@ interface ApiEnvelope {
     /** 实测形状（2026-09-16）：批量结果字段名是 extract_result，不是 results。 */
     extract_result?: Array<{
       file_name?: string
+      /** 提交时的 data_id，实测回传（2026-09-17）。 */
+      data_id?: string
       state?: string
       err_msg?: string
       full_zip_url?: string
@@ -178,6 +185,7 @@ export class MineruClient {
       const results = envelope.data?.extract_result ?? []
       const files: MineruFileResult[] = results.map((result) => ({
         fileName: result.file_name ?? '(unknown)',
+        ...(result.data_id === undefined ? {} : { dataId: result.data_id }),
         state: (result.state ?? 'pending') as MineruFileResult['state'],
         ...(result.err_msg === undefined ? {} : { errMsg: result.err_msg }),
         ...(result.full_zip_url === undefined ? {} : { fullZipUrl: result.full_zip_url }),

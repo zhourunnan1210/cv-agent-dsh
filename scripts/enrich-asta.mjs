@@ -39,7 +39,7 @@ import { PaperLibrary } from '../packages/dsh-plugin/lib/kb/library.js'
 if (!process.env.HTTPS_PROXY) process.env.HTTPS_PROXY = 'http://127.0.0.1:10808'
 if (!process.env.HTTP_PROXY) process.env.HTTP_PROXY = 'http://127.0.0.1:10808'
 if (!process.env.NODE_USE_ENV_PROXY) process.env.NODE_USE_ENV_PROXY = '1'
-if (!process.env.NO_PROXY) process.env.NO_PROXY = 'localhost,127.0.0.1,::1,mineru.net,api.deepseek.com'
+if (!process.env.NO_PROXY) process.env.NO_PROXY = 'localhost,127.0.0.1,::1,mineru.net,aliyuncs.com,openxlab.org.cn,api.deepseek.com'
 
 try {
   const dotEnv = await readFile('.env.local', 'utf8')

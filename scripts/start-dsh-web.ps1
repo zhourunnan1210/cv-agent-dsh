@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     启动 dsh web 宿主，并带上 cv-research 所需的环境变量。
 
@@ -49,8 +49,27 @@ $env:HTTPS_PROXY = $proxyUrl
 $env:HTTP_PROXY = $proxyUrl
 $env:NODE_USE_ENV_PROXY = '1'
 # 国内服务直连，别绕代理（Node 的 EnvHttpProxyAgent 认 NO_PROXY）
-$env:NO_PROXY = 'localhost,127.0.0.1,::1,mineru.net,pypi.tuna.tsinghua.edu.cn,mirrors.aliyun.com,api.deepseek.com'
+#
+# ⚠️ `aliyuncs.com` 与 `openxlab.org.cn` 是**必需项**，不是顺手加的：
+# MinerU 的解析 API 在 mineru.net，但
+#   ① 签名上传链接落在 `mineru.oss-cn-shanghai.aliyuncs.com`（阿里云上海 OSS）；
+#   ② 解析产物的 zip 落在 `cdn-mineru.openxlab.org.cn`。
+# 漏掉任一个，代理一挂，**解析链路就在那一步全废**（实测：漏 ① 时上传 PUT
+# ECONNREFUSED 127.0.0.1:10808；漏 ② 时 7 篇全部「fetch failed」，
+# 而 MinerU 侧其实已经 done）。这两个端点都是国内直连、根本不需要代理——
+# 2026-09-17 实测：API 304ms、OSS PUT 249ms，均 HTTP 200。
+$env:NO_PROXY = 'localhost,127.0.0.1,::1,mineru.net,aliyuncs.com,openxlab.org.cn,pypi.tuna.tsinghua.edu.cn,mirrors.aliyun.com,api.deepseek.com'
 $env:no_proxy = $env:NO_PROXY
+
+# ── 1b. skill 根：让 skill 与「会话工作区」解耦 ─────────────────────────────
+# dsh 默认只扫描「会话工作区所属项目根」下的 .dsh/skills（rank 100）。换个工作区
+# 跑科研项目时就找不到，而且**不报错、只是工具消失**——正是本项目最忌讳的失败模式。
+# 这两个变量把 skill 根钉死成绝对路径，与工作区无关；cv-research preset 的
+# skill-filesystem 行会读它们（见 presets/cv-research/agent.cordis.yml）：
+#   CV_PROJECT_SKILLS_DIR  第三方 skill 归档（CCFA / nature / academic-research）
+#   CV_PLUGIN_SKILLS_DIR   插件自带的 skill（paper-fetch，随 cv-agent-dsh 分发）
+$env:CV_PROJECT_SKILLS_DIR = Join-Path $repoRoot '.dsh\skills'
+$env:CV_PLUGIN_SKILLS_DIR = Join-Path $repoRoot 'packages\dsh-plugin\skills'
 
 # ── 2. 密钥：环境变量优先，其次 .env.local（gitignore 覆盖）────────────────
 function Import-DotEnv([string]$Path) {

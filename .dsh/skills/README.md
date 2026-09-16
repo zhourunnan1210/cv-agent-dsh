@@ -10,12 +10,15 @@
 
 | 来源 | 本目录下的条目 | 可发现的 skill | 许可 | 基准提交 | 需要 dsh 适配 |
 | --- | --- | --- | --- | --- | --- |
-| [paper-fetch](https://github.com/Agents365-ai/paper-fetch) | `paper-fetch/` | 1 | MIT | `8e329aa`（2026-09-16） | **是**（2 处） |
 | [CCFA-Skills](https://github.com/mikubaka88/CCFA-Skills) | `ccf-*/`（18 个，含资源目录 `ccf-latex-templates`） | 17 | **MIT** | `383f4c4`（2026-09-16） | 否 |
 | [nature-skills](https://github.com/Yuan1z0825/nature-skills) | `nature-*/` + `_shared/`（16 个） | 15 | **Apache-2.0** | `c91df24`（2026-07-02） | **是**（1 个文件） |
 | [academic-research-skills](https://github.com/Imbad0202/academic-research-skills) | `academic-*/` + `shared/`（5 个） | 4 | ⚠️ **CC BY-NC 4.0** | `7f97a73`（2026-05-19） | **是**（5 个文件） |
 
-合计 **37 个可发现 skill + 3 个纯资源目录**（`ccf-latex-templates`、`shared`、`_shared`）。
+合计 **36 个可发现 skill + 3 个纯资源目录**（`ccf-latex-templates`、`shared`、`_shared`）。
+
+> 📦 **`paper-fetch` 已不在此目录**：2026-09-16 迁入插件包
+> [`packages/dsh-plugin/skills/paper-fetch/`](../../packages/dsh-plugin/skills/README.md)，
+> 使其随 `cv-agent-dsh` 分发。它的修改登记也随迁到那边的 README。
 
 > ⚠️ **许可提示：`academic-research-skills` 是 CC BY-NC 4.0（署名—非商业性使用）。**
 > 它是 BY-NC 而非 BY-NC-ND，因此**允许演绎**（本目录的适配修改不违规）。
@@ -29,22 +32,7 @@
 
 ---
 
-## 一、paper-fetch
-
-| 项 | 值 |
-| --- | --- |
-| 用途 | DOI / 标题 → PDF，七源回退链；补上 Asta 没有的全文获取能力 |
-
-**对上游源码的修改（依 `NOTICE.md` 的 vendored 纪律登记）：**
-
-| 文件 | 修改 | 原因 |
-| --- | --- | --- |
-| `scripts/fetch.py` | `_is_scihub_enabled()` 的默认值**反转**：上游是"除非 `PAPER_FETCH_NO_SCIHUB=1` 否则开启 Sci-Hub"，改为"除非 `PAPER_FETCH_ALLOW_SCIHUB=1` 否则关闭"。上游的退出变量仍然优先。 | `NOTICE.md` 合规红线 #1 明令"Agent 不做绕过付费墙的抓取"。上游默认开启 Sci-Hub 镜像兜底，意味着**忘记设环境变量就会静默恢复盗版兜底**。 |
-| `SKILL.md` | 第 7 条来源的说明改成"本仓库默认关闭" | 让模型读到的指令与脚本实际行为一致 |
-
----
-
-## 二、CCFA-Skills（MIT，**零适配**）
+## 一、CCFA-Skills（MIT，**零适配**）
 
 为 CCF-A 会议体裁而生的 skill 家族，是本项目论文写作与绘图的主力工具包。
 17 个 skill 的家族控制文件在 `ccf-common/references/`，各 skill 以 `../ccf-common/…`
@@ -69,7 +57,7 @@
 
 ---
 
-## 三、nature-skills（Apache-2.0）
+## 二、nature-skills（Apache-2.0）
 
 15 个 skill，工程化程度最高：每个 skill 拆成 static（可复用片段）与 dynamic
 （`manifest.yaml` + 路由）两层，按需加载。体裁是**期刊论文**（Nature 系），
@@ -90,7 +78,7 @@
 
 ---
 
-## 四、academic-research-skills（CC BY-NC 4.0）
+## 三、academic-research-skills（CC BY-NC 4.0）
 
 4 个 skill，重编排型（`academic-paper` 是"12-agent pipeline"，`deep-research` 是
 "13-agent pipeline"，`academic-pipeline` 是端到端 10 阶段编排）。上游是一个

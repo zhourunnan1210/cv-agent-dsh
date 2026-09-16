@@ -24,7 +24,7 @@
 | 能力 | 现方案 | 说明 |
 | --- | --- | --- |
 | 学术检索 | **Asta MCP**（Ai2，Semantic Scholar 图谱） | 8 个工具，经 dsh 自带的 `dsh-mcp-client` 桥接，名字形态 `mcp__asta__*` |
-| 全文获取 | **paper-fetch** skill（`.dsh/skills/`） | DOI / 标题 → PDF，七源回退；Sci-Hub 兜底**默认已关**（合规红线 #1） |
+| 全文获取 | **paper-fetch** skill（插件自带，`packages/dsh-plugin/skills/`） | DOI / 标题 → PDF，七源回退；Sci-Hub 兜底**默认已关**（合规红线 #1） |
 | PDF 解析 | MinerU **官方 API**（`mineru.net/api/v4`） | **仅走 API，不做本地部署**（2026-09-16 决定）；服务与工具行尚未落地 |
 | ~~学术检索（旧）~~ | ~~dsh-ai4scholar~~ | **已从 web profile 停用**。源码保留在 `packages/vendor/` 备查，不再装载 |
 
@@ -35,13 +35,14 @@
 ## 目录结构
 
 ```
-.dsh/skills/                  项目级 skill 根（dsh 自动发现）：37 个 skill —— paper-fetch /
-                              CCFA（写作·绘图·投稿）/ nature / academic-research
-scripts/                      启动脚本（start-dsh-web.ps1）与前置自检
+.dsh/skills/                  第三方 skill 归档（36 个）：CCFA（写作·绘图·投稿）/
+                              nature / academic-research —— 由 CV_PROJECT_SKILLS_DIR 钉住
+scripts/                      启动脚本（start-dsh-web.ps1）、Asta 预检、skill 根的环境变量
 .env.example                  密钥模板（复制为 gitignore 的 .env.local）
 packages/
 ├── core/                     @cv-research/core —— 平台无关核心（schema / scoring / domain / state）
 ├── dsh-plugin/               cv-agent-dsh —— dsh 适配层（Service / Tool / Preset / Guard）
+│   └── skills/               插件自带的 skill（paper-fetch）—— 随包分发，由 CV_PLUGIN_SKILLS_DIR 钉住
 ├── mcp-server/               @cv-research/mcp —— 核心能力的 MCP 服务化
 └── vendor/dsh-ai4scholar/    上游插件源码（MIT）——已停用，仅备查
 configs/                      modes.yml / experiment_constraints.yml / budget.yml
@@ -50,6 +51,11 @@ docs/                         文档与勘误
 tests/                        冒烟与集成测试
 data/                         运行期数据（gitignore）
 ```
+
+> **skill 有两处根，都不在"会话工作区"里**：dsh 默认只扫描会话工作区所属项目根下的
+> `.dsh/skills`，换个目录跑科研项目就会**静默找不到任何 skill**。因此 `cv-research`
+> preset 的 `skill-filesystem` 行通过 `customSkillDirs` 显式挂载这两处，路径由
+> `scripts/start-dsh-web.ps1` 用环境变量钉成绝对路径。启动宿主请用该脚本。
 
 ## 环境要求
 
