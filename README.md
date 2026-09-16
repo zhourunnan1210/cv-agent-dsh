@@ -136,7 +136,8 @@ node tests/spike-asta-mcp.mjs                         # 装载 → 注册 → �
 
 | 文件 | 内容 |
 | --- | --- |
-| `docs/CV-Research-Agent_勘误与修订设计-v1.3.md` | **先读这个**：对 v1.2 的勘误、修订版设计、Phase 0 结论 |
+| `docs/CV-Research-Agent_勘误与修订设计-v1.3.md` | **先读这个**：对 v1.2 的勘误、修订版设计、Phase 0 结论、运行时坑（E16–E22） |
+| `docs/mineru-api.md` | MinerU API 接入参考：端点（实测）、限流与额度（官方）、境外 URL 陷阱、与 paper-fetch 的接法 |
 | `NOTICE.md` | 第三方许可、外部数据服务、学术合规红线 |
 | `.dsh/skills/README.md` | 归档的本地 skill 及其**对上游的修改登记** |
 | `packages/dsh-plugin/presets/README.md` | cv-research preset 的权威源说明与依赖 |

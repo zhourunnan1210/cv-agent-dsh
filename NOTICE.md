@@ -42,7 +42,7 @@
 | 服务 | 用途 | 备注 |
 | --- | --- | --- |
 | Asta MCP（Ai2，`asta-tools.allen.ai`） | 学术检索：Semantic Scholar 图谱的检索 / 引用 / 作者 / 正文片段 | 经 `x-api-key` 鉴权；遵守其 ToS 与速率限制 |
-| MinerU API（mineru.net，上海 AI 实验室） | PDF → Markdown / JSON 深度解析 | 免费额度 1000 页/天；上传的 PDF 会离开本机，敏感材料不要送 |
+| MinerU API（mineru.net，上海 AI 实验室） | PDF → Markdown / JSON 深度解析 | 额度 **2000 页/天**最高优先级（超出降优先级）；限流与端点见 `docs/mineru-api.md`。**上传的 PDF 会离开本机，敏感材料不要送** |
 | Unpaywall / Semantic Scholar / arXiv / PubMed Central / bioRxiv / medRxiv | 开放获取 PDF 解析 | 免费源，须遵守各自 rate limit 与 ToS |
 
 ## 合规红线（摘自 v1.2 §23，工程上必须强制）
