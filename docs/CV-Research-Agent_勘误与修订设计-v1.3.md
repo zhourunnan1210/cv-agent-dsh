@@ -718,9 +718,9 @@ Domain Pack 的 `ext` JSON 列，不冻结）：
 
 | # | 事项 | 状态 | 谁能做 |
 | --- | --- | --- | --- |
-| P2-0 | **三库 schema 冻结提案批准**（§7.5.2） | **待你** | 你 |
-| P2-1 | 确认 asta 通道的**形态**（dsh skill？MCP 工具？CLI？）与其检索结果的输出结构 | **待你** | 你 |
-| P2-2 | 本地百篇 PDF 的目录路径 | **待你** | 你 |
+| P2-0 | **三库 schema 冻结提案批准**（§7.5.2） | ✅ 已批准（2026-09-16，用户「全批，按 §7.5.2 冻结」） | 你 |
+| P2-1 | 确认 asta 通道的**形态**（dsh skill？MCP 工具？CLI？）与其检索结果的输出结构 | ✅ 已解决：Asta MCP（Ai2，`asta-tools.allen.ai/mcp/v1`，streamable-http + `x-api-key`），8 个工具 `mcp__asta__*`，名字契约在 `names.ts`；`tests/spike-asta-mcp.mjs` L1 实证 + 连通预检 v1.12.3 通过；preset 已有 `mcp-asta` 行 | 我 |
+| P2-2 | 本地百篇 PDF 的目录路径 | ✅ 已解决：`C:\Users\Admin\Zotero\storage`（递归），实测 **151 篇 PDF** | 我 |
 | P2-3 | MinerU API 端点 + key 环境变量名 + 限流参数 | ✅ 已完成：`docs/mineru-api.md`（端点全部实测、`MINERU_TOKEN` 在 `.env.local` 已验、官方限流与上传优先链路）——P2-4 直接按它实现 | 我 |
 | P2-4 | 论文库落盘流水线：`metadata.db` 初始化、`cvagent_kb_import_paper`、MinerU API 适配器（异步任务 + 轮询） | P2-0 | 我 |
 | P2-5 | Scout 检索（asta 主通道 + dsh-ai4scholar 备选）与去重合并 | P2-1 | 我 |
