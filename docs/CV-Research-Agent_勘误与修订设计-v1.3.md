@@ -56,6 +56,10 @@
 | E19 | （工程细节，未涉及） | — | preset 组合里**不带 config 的行**，Loader 传入的 config 是 `undefined`，schemastery 的 `.default()` 在该路径**不生效**（mount-validate 报 `Cannot read properties of undefined (reading 'projectDir')`）——构造器必须 `config = {}` + `?.` 显式取默认值 | **L1**（mount-validate 实测） | 见 §5.3.2 |
 | E20 | §16.1 角色矩阵 / §4.1 | 隐含假设：主 Agent 的工具面可以由 preset 组合裁剪（排除 `read_*` 等重上下文工具） | **部分不成立**：dsh-ai4scholar 是 profile 的 bundle 层（宿主平面），其 38 个工具对**所有** preset 全局可见，preset 组合无法移除它们。且主 Agent 的 setup 窗口由 `dsh-api-session-controller.composeAgent()` 硬编码（`mount` + `installSelection`，无第三方钩子），目录级 `restrict()` 对主 Agent **没有受支持的扩展点**。**已用执行级护栏解决**（`tools/pre-execute` waterfall + `agents.roots()` 区分根/子代理），见 §5.3.2 第 5 条 | L2（controller 源码级）+ **L1**（护栏 6 条测试） | **已闭环**（执行级） |
 | E21 | （工程事实，未涉及） | — | **运行中的宿主进程缓存两样东西**：① 已加载的插件模块代码（Node module cache）；② 包根的 `package.json` exports 解析（新增子路径报 `Package subpath './x' is not defined by exports`，尽管磁盘上已有）。两者都不随文件 mtime 失效——**HMR 未启用时，插件的任何改动（含 exports 映射）都必须重启宿主**。三轮 mount-validate 反复命中同一条旧错误、磁盘修复全绿，实证了这一点 | **L1**（三轮实测） | 记录备案 |
+| E22 | §5.1 检索能力（Asta 通道） | 隐含假设：`search_papers_by_relevance` 的 `limit` 生效，可按 limit 批量取论文 | **不成立**。实测（2026-09-17）该工具**忽略 `limit`**，无论传 5 还是 50 都只回**单篇**最佳匹配——它是「按关键词找那篇论文」，不是检索通道。**有量的通道是 `snippet_search`**（limit=100 → 100 条 snippet、覆盖 68 篇不同论文，`data[].paper` 给 corpusId/title/authors）。另有一条**渲染陷阱**：MCP 结果的 `content[0].text` **只渲染第一条记录**，完整数组在 `value.structuredContent.result` 里；只读 text 会把 500 条误当 1 条（`get_paper_batch` 同此）。见 §7.6 | **L1**（真实调用实测） | **改通道用法**：Scout 走 `snippet_search` 发现 + `get_paper_batch` 按 CorpusId 批量补元数据（fields 只用 `title,year,venue,externalIds`，带 `abstract` 会挂起，见 P2-5） |
+| E23 | §8.1 MinerU 链路 | `docs/mineru-api.md` §4：提交任务类限流 300 次/分钟 | **文档口径偏松**。实测 `POST /file-urls/batch` 在数分钟内第 3 次提交即 **HTTP 429**（前两块上传各耗时约 1 分钟，绝非 300/分的量级），说明该端点有比公开表格更紧的频控 | **L1**（批量解析实测） | 提交层必须**退避重试 + 块间停顿**（5s→80s 指数退避，块间 6s）；`batch-parse.mjs` 已实现 |
+| E24 | （工程细节，未涉及） | — | **paper_id 不能直接当路径**：Zotero 导入的 `local:...` 条目带 `:`，在 Windows 上是非法路径字符，`mkdir` 抛 `ENOENT` 并**直接崩掉整个批量进程**——一篇论文毁掉已提交的 106 篇进度。同理标题派生的 ID 可能超长（MAX_PATH）。**续发形态**：截断到 100 字符时若正好落在空格上，会生成「尾随空格目录名」——**Node 的 `statSync` 读得到，PowerShell / 资源管理器读不到**（`Get-ChildItem -Recurse` 直接报「找不到路径」），完整性检查因此全绿而用户实际打不开目录 | **L1**（批量解析 + 目录遍历双重实测） | 三条纪律：① 落盘目录走 `safeDirName()`（非法字符→`_`、逐段截断 100 字符**并去尾随空格/点**，DOI 的 `/` 保留以兼容既有布局），**DB 里的 `md_path` 才是契约**；② 逐篇 `try/catch`，单篇失败只标 `parse_channel='failed'`，不得终止整批；③ 完整性检查必须用**与用户相同的读取路径**（PowerShell）复核，不能只看 Node |
+| E25 | （工程细节，未涉及） | — | 额度账本的公开面是 **`quota.status`**（`QuotaStatus{date,usedPages,limit,overHighPriority,warning}`），不是 `quota.usedPages` 直接属性；直接取会得到 `undefined` 并让预算门静默失效 | **L1** | 记录备案（`batch-parse.mjs` 已按 `quota.status` 取值） |
 
 ---
 
@@ -724,11 +728,94 @@ Domain Pack 的 `ext` JSON 列，不冻结）：
 | P2-3 | MinerU API 端点 + key 环境变量名 + 限流参数 | ✅ 已完成：`docs/mineru-api.md`（端点全部实测、`MINERU_TOKEN` 在 `.env.local` 已验、官方限流与上传优先链路）——P2-4 直接按它实现 | 我 |
 | P2-4 | 论文库落盘流水线：`metadata.db` 初始化、`cvagent_kb_import_paper`、MinerU API 适配器（异步任务 + 轮询） | ✅ 实现 + 接线 + **重启后验证通过**：kb 组经 `standingKeyFor('cv-research')` 挂载成功；mineru-quota 行在宿主组合树中就位 | 我 |
 | P2-5 | Scout 检索（asta 主通道 + dsh-ai4scholar 备选）与去重合并 | ✅ 本地导入 + Asta 富化完成：147 条入库，**145/147 有外部 ID**（DOI 134 / arXiv 61）；2 条无结果留待人工。`scripts/import-zotero.mjs`（幂等）+ `scripts/enrich-asta.mjs`（标题归一化相等才合并、1s 节流）。**L1 新坑**：asta `search_paper_by_title` 的 `fields` 带 `abstract` 会让服务端挂起（MCP -32001 超时），只用 `title,year,venue,externalIds`；返回形状为 `value.content[0].text` 内嵌 JSON | 我 |
-| P2-6 | Reader 结构化提取（走 outputSchema 的子代理）与 Analyst 三库更新 | ✅ Reader 侧完成：`cvagent_kb_extract` 工具化（`kb/extract-tool.ts`）——spawn Reader 子代理（toolFilter `{read}`、`READER_PERSONA`、outputSchema=PaperExtraction 编译、maxDepth 0），结构化结果 `coerceExtraction` 校验后 `kb.saveExtraction` 落库；`kb` 服务开放 `saveExtraction/getExtraction/extractionCount`；preset kb 组加 `cv-agent-dsh/kb-extract` 行并同步工作副本；kb-extract 测试 6 个全绿（dsh-plugin 65）。**Analyst 三库条目生成留待 P2-7 实践后按需补**（提取 → 三库映射在 §5.3 有语义定义，未冻结为工具） | 我 |
-| P2-7 | Phase 2 验收：从 0 检索某 Deepfake 子主题 → ≥100 篇论文库与三库，抽检 20 篇 | P2-5/6 | 我 |
+| P2-6 | Reader 结构化提取（走 outputSchema 的子代理）与 Analyst 三库更新 | ✅ Reader 侧完成：`cvagent_kb_extract` 工具化（`kb/extract-tool.ts`）——spawn Reader 子代理（toolFilter `{read}`、`READER_PERSONA`、outputSchema=PaperExtraction 编译、maxDepth 0），结构化结果 `coerceExtraction` 校验后 `kb.saveExtraction` 落库；`kb` 服务开放 `saveExtraction/getExtraction/extractionCount`；preset kb 组加 `cv-agent-dsh/kb-extract` 行并同步工作副本；kb-extract 测试 6 个全绿（dsh-plugin 65）。**Analyst 三库条目生成在 P2-7 以委派角色落地**（21 篇提取 → 104 条条目，见 §8.4；仍是「角色 + 脚本装载」，未冻结为工具） | 我 |
+| P2-7 | Phase 2 验收：从 0 检索某 Deepfake 子主题 → ≥100 篇论文库与三库，抽检 20 篇 | ✅ **通过（2026-09-17，记录见 §8）**：① 批量 MinerU 解析 **146/146 成功、0 失败**（额度 1900/2000 页，断点续跑不重复计费）；② Asta 从零检索「音频深伪」子主题：发现 244、**入库 243**（外部 ID 244/244），论文库 147 → **390**；③ 抽检 **20 篇**（分层 arxiv/doi/local）+ 20 个真实 Reader 子代理，21 篇提取契约 **100% 通过**，3 篇逐条回原文核验字面命中；④ 三库 **104 条**（P14/M21/I69）。通道形态与工程教训改写为 E22–E25 | 我 |
 
 > P2-0 是 Phase 2 的**启动闸门**（v1.2 §14 的截止项）。P2-1/2/3 是外部事实，
 > 不阻塞 schema 冻结，但阻塞 P2-4/5 的实现。
+
+---
+
+## 8. Phase 2 验收记录（P2-7，2026-09-17）
+
+P2-7 的验收口径（§7.5.3）：**从 0 检索一个 Deepfake 子主题 → 论文库与三库成形，抽检 20 篇**。
+本轮三件事一次做完，全部走**真实通道**（真 API、真子代理、真落盘），没有 mock 或手工补数据。
+
+### 8.1 批量 MinerU 解析：146/146 成功，0 失败
+
+| 指标 | 结果 |
+| --- | --- |
+| 合格论文（未解析 + 有本地 PDF） | 146 篇（另 1 篇试点已解析 → 语料合计 **147 篇全解析**） |
+| 提交 | 8 个 chunk × 20 文件（MinerU 批量上限 50，取 20 保守） |
+| 解析成功 | **146 / 146**（失败 0；`full.md` 缺失 0） |
+| 额度消耗 | **1900 / 2000 页**（跨天重置；1621 页越过 80% 告警线——账本只告警不拒绝，符合 §4 语义） |
+| 落盘 | `data/papers/markdown/`，DB `md_path` 完整性核查 **147/147** 存在且 ≥1KB |
+| 断点续跑 | 两次中断（429 限流、路径崩溃）后 `--resume` 只轮询+落库，**未重复提交、未重复计费** |
+
+新增脚本 `scripts/batch-parse.mjs`：分块提交 → MinerU 并发处理 → 逐块轮询 → 解压落盘 → 写
+`md_path` → 额度记账；带 `--resume`（状态文件 `data/papers/batch-state.json`）、`--dry-run`
+（预算与名单预演）、幂等跳过（已解析的不重复下载与计费）。三条 L1 教训见 **E23/E24/E25**。
+
+### 8.2 Asta 从零检索控制组：发现 244 篇 / 入库 243 篇
+
+子主题选**音频深伪检测**（audio deepfake detection）——原语料 147 条里只有 3 条 audio-visual，
+是真正的「从 0」，能暴露检索通道本身的系统性问题。
+
+| 指标 | 结果 |
+| --- | --- |
+| 关键词组 | 4 组（audio deepfake detection / deepfake voice detection / spoofed speech detection / audio anti-spoofing countermeasure） |
+| 发现 | 244 篇**互不重复**论文（`snippet_search` limit=100 ×4 组） |
+| 元数据富化 | 244 / 244（`get_paper_batch` 按 CorpusId 批量补 DOI/arXiv/year/venue） |
+| 外部 ID 覆盖 | **244 / 244**（234 DOI、142 arXiv） |
+| 入库 | **新入库 243**、标题命中待复核 1（§7.5.2 纪律：标题命中不自动合并）、失败 0 |
+| 论文库总量 | 147 → **390**（`source_channel`：manual 147 / asta 243） |
+| 通道内重复 | 归一化标题重复组 **0**（去重生效） |
+
+**通道形态被实测改写**（E22）：`search_papers_by_relevance` 的 `limit` **不生效**，只回单篇——
+批量检索必须走 `snippet_search`；且 MCP 结果的 `content[0].text` 只渲染第一条，完整数组在
+`value.structuredContent.result`。脚本：`scripts/asta-control.mjs`（证据脚本
+`scripts/probe-asta-search.mjs`、`scripts/probe-asta-shape2.mjs`），汇总落
+`data/papers/asta-control-summary.json`。
+
+### 8.3 抽检 20 篇 Reader 提取：21 篇入库、0 契约违规
+
+| 指标 | 结果 |
+| --- | --- |
+| 抽样 | 20 篇（分层 arxiv 7 / doi 7 / local 6；排除已有提取；≥20KB；`scripts/pick-spotcheck.mjs`） |
+| 执行 | 20 个**真实 Reader 子代理**（spawn，独立上下文，只读文件 + 写 JSON） |
+| 契约校验 | 21 个提取文件（20 抽检 + 1 试点）**全部通过**，非法 0、警告 0（`scripts/load-extractions.mjs`） |
+| 入库 | `paper_extractions` 21 篇，`papers.extraction_quality` 镜像 21 条 |
+| 人工核验 | 3 篇逐条回原文核对（WMamba / 音视频同步 / DeepFake-Adapter）：τ=15、Gaussian target、16.92M→19.28M、4×V100、PD@10% 语义等**全部字面命中**，无编造 |
+| 拒绝编造的行为 | 多处「原文无 Limitations/Future Work 章节」被如实留空数组（而非用常识补写） |
+
+### 8.4 三库条目（Analyst 归纳）
+
+Analyst 子代理从 21 篇提取归纳出 **104 条**三库条目（含试点已有 6 条）：
+
+| 库 | 条目数 | 说明 |
+| --- | --- | --- |
+| problems | **14** | 跨论文概念（跨数据集/跨伪造手法泛化、持续学习遗忘、公平性与偏置、可解释性、音视频一致性、对抗鲁棒性、主动防御、实时与轻量化部署、无标注/真实数据条件、局部篡改细微伪影、AI 生成内容、通用主干表征…） |
+| methods | **21** | 每篇论文一条（试点 M001 + 本批 20），含范式/主干/训练策略/泛化目标四栏 |
+| innovations | **69** | 机制级创新（模块/损失/数据集/评测协议），每篇 2–4 条 |
+
+- **ID 与关联**：ID 由入库时分配（P002–P014、M002–M021、I005–I069）；`related_problem_ids` /
+  `related_method_ids` 在各库 ID 落定后由 `scripts/link-entry-ids.mjs` **按 source_papers 交集
+  机械回填 90 条**（Analyst 生成时 ID 尚不存在，故留空）。
+- **一处人工合并**：Analyst 的「实时与轻量化部署」与原 P001 语义重合但归一化不同（不会被静默丢弃）。
+  裁决：把 P001 的 statement 改为 Analyst 的精确表述（原表述把「跨数据集泛化」也卷了进来，而本批
+  已把跨数据集泛化单列为独立 problem），随后装载时**合并**——P001 的 `source_papers` 取并集（8 篇）。
+- **契约校验**：`scripts/load-entries.mjs` 硬错误 0、警告 0（枚举/溯源/归一化重复三项全过）；
+  65 条 innovations 的 statement 归一化后两两不同，无静默丢条目。
+
+### 8.5 验收结论
+
+- **论文库**：390 篇（≥100 ✔），其中 243 篇由 Asta 从零检索通道产生，外部 ID 全覆盖；
+- **解析深度**：147 篇全文解析（≥20 ✔），md_path 完整性 100%；
+- **抽检**：20 篇（✔），提取契约 100% 通过，人工核验 3 篇逐条命中；
+- **三库**：104 条（problems 14 / methods 21 / innovations 69，≥100 ✔），条目全部可溯源到论文
+  （`source_papers`），90 条已回填 `related_*_ids` 关联；
+- **遗留**（不阻塞 Phase 3）：243 篇 Asta 论文只有元数据（`pdf_status='pending'`），
+  全文获取需接 `paper-fetch`/Zotero 通道后二次批量解析；1 条标题命中待人工复核。
 
 ---
 
@@ -790,3 +877,46 @@ node packages/dsh-plugin/tests/role-matrix.test.mjs → ROLE MATRIX SPEC OK（5 
 **一处环境记录**：`.npmrc` 把 pnpm 的 global/state/store 指向 `.pnpm-home/`。这最初是为绕开
 受限文件策略（pnpm 的 package-manager env 目录不可写），现在作为「pnpm 状态全部留在工作区内」
 的工程选择保留——部署到 CI 或云 GPU 机器时可按需删除。
+
+### B.2 Phase 2 验收（P2-7，2026-09-17）
+
+```
+node scripts/import-zotero.mjs                 → 147 条入库（151 个 PDF，pdf_path 全部命中）
+node scripts/enrich-asta.mjs                   → 145/147 拿到外部 ID（2 条无结果）
+node scripts/batch-parse.mjs --dry-run         → 146 篇合格、预算 1900 页（额度门生效）
+node scripts/batch-parse.mjs                   → 8 chunk 提交；第 3 块 429 → 退避重试
+node scripts/batch-parse.mjs --resume          → 40/40 成功（第一次中断后续跑）
+node scripts/batch-parse.mjs                   → 提交剩余 106 篇（含 6s 块间停顿）
+node scripts/batch-parse.mjs --resume          → 86/86 成功（local: 路径崩溃修复后续跑）
+                                                  合计 146/146，失败 0，额度 1900/2000 页
+node scripts/db-stats.mjs                      → papers=390（manual 147 + asta 243）
+                                                  parsed=147  failed=0  extractions=21
+node scripts/check-md-paths.mjs                → md_path 147/147 存在且 ≥1KB
+node scripts/fix-dir-names.mjs                 → 修 3 个「尾随空格目录名」（PowerShell 读不到）
+node scripts/asta-control.mjs                  → 4 组关键词：发现 244、富化 244、入库 243、
+                                                  待复核 1；外部 ID 244/244；库 147→390
+node scripts/pick-spotcheck.mjs --n 20         → 分层抽样 20 篇（arxiv 7 / doi 7 / local 6）
+20 × subagent（Reader，spawn）                  → 20 个提取 JSON（独立上下文、只读文件）
+node scripts/load-extractions.mjs --audit      → 21/21 契约通过，非法 0，警告 0
+node scripts/load-extractions.mjs              → 写库 21 条 paper_extractions
+node scripts/export-entries.mjs                → 既有三库 6 条（P001/M001/I001–I004）
+node scripts/digest-extractions.mjs            → 21 篇摘要 68KB（Analyst 单文件输入）
+subagent（Analyst）                             → p27-analyst-entries.json
+node scripts/load-entries.mjs <entries>        → 条目校验 + 装载（三库计数见 §8.4）
+pnpm run typecheck                             → 4/4 包通过
+pnpm test                                      → core 24 / dsh-plugin 65 / vendor 88|2 全绿
+node tests/smoke-vendor-plugin.mjs             → SMOKE OK
+node tests/spike-s1-tool-isolation.mjs         → S1 SPIKE OK
+node packages/dsh-plugin/tests/names.test.mjs  → NAMES CONTRACT OK
+node packages/dsh-plugin/tests/role-matrix.test.mjs → ROLE MATRIX SPEC OK
+```
+
+**本轮修正的三处工程缺陷**（同样属于「检查看起来绿、换个入口就崩」）：
+
+1. **单篇路径崩溃拖垮整批**：`local:` 论文 ID 带 `:`，Windows 上 `mkdir` 抛 ENOENT，
+   进程直接退出，已提交的 106 篇进度被搁置。已加 `safeDirName()` + 逐篇 `try/catch`（E24）。
+2. **尾随空格目录名**：截断正好落在空格上时，Node 读得到而 PowerShell/资源管理器读不到，
+   `check-md-paths.mjs` 全绿却打不开目录。已加去尾随空格/点 + `fix-dir-names.mjs` 修复（E24 续）。
+3. **提取装载的幂等性**：中断重跑会重复下载与重复记账；已加「已解析则跳过」判断，并在
+   `--resume` 路径上先关连接、再删临时目录（Windows 上 sqlite 未关时删目录必 EBUSY）。
+
