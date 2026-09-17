@@ -26,13 +26,24 @@
 .PARAMETER DryRun
     只做前置检查与预检，不启动宿主。改环境/排查时先用它。
 
+.PARAMETER OpenWhenRunning
+    端口已被占用（宿主已在运行）时，**直接打开浏览器**并正常退出，而不是报错退出。
+    桌面快捷方式用这个开关：想打开时双击即可——已在跑就开页面，没跑就起宿主。
+
+.PARAMETER Interactive
+    交互模式（桌面快捷方式用）：遇到需要人工处理的情况（代理没开等）时**暂停等待按键**，
+    避免双击后窗口一闪而过、什么都看不到。
+
 .EXAMPLE
-    powershell -NoProfile -File scripts\start-dsh-web.ps1 -DryRun
-    powershell -NoProfile -File scripts\start-dsh-web.ps1
+    powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start-dsh-web.ps1 -DryRun
+    powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start-dsh-web.ps1
+    powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start-dsh-web.ps1 -OpenWhenRunning -Interactive
 #>
 param(
     [int]$Port = 3080,
-    [switch]$DryRun
+    [switch]$DryRun,
+    [switch]$OpenWhenRunning,
+    [switch]$Interactive
 )
 
 $ErrorActionPreference = 'Stop'
@@ -112,7 +123,15 @@ if ($listening) {
     Write-Host '  代理端口             = 在监听' -ForegroundColor Green
 } else {
     Write-Host ("  代理端口 {0}         = 未监听 → Asta 会 403" -f $proxyPort) -ForegroundColor Red
-    Write-Host '    → 先启动你的代理客户端。' -ForegroundColor Yellow
+    Write-Host '    → 请先启动你的代理客户端（Clash / v2ray 等）。' -ForegroundColor Yellow
+    # 交互模式下等用户处理：双击场景里窗口一闪而过是最糟的体验
+    if ($Interactive -and -not $DryRun) {
+        Write-Host '    → 启动代理后按任意键继续（Ctrl+C 取消）…' -ForegroundColor Yellow
+        $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
+        $listening = (netstat -ano | Select-String ":$proxyPort\s" | Select-String 'LISTENING') -ne $null
+        if ($listening) { Write-Host '  代理端口             = 现在在监听' -ForegroundColor Green }
+        else { Write-Host '  代理端口             = 仍未监听（宿主会启动，但该 Agent 不会有检索工具）' -ForegroundColor Red }
+    }
 }
 
 # 真实连通性预检：把"key 存在"升级为"key 真的能用"。
@@ -145,12 +164,24 @@ if ($env:ASTA_API_KEY -and $listening) {
     }
 }
 
-# 目标端口是否已被占用（宿主已在跑）→ **早退**，别去撞一个注定失败的启动
+# 目标端口是否已被占用（宿主已在跑）→ 桌面快捷方式场景下**直接开浏览器**，终端场景下早退
 $busy = (netstat -ano | Select-String ":$Port\s" | Select-String 'LISTENING') -ne $null
 if ($busy) {
-    Write-Host ("  端口 {0}            = 已被占用（宿主可能已在运行）" -f $Port) -ForegroundColor Yellow
+    Write-Host ("  端口 {0}            = 已被占用（宿主已在运行）" -f $Port) -ForegroundColor Yellow
+    if ($OpenWhenRunning) {
+        $url = "http://127.0.0.1:$Port"
+        if ($DryRun) {
+            # DryRun 的语义是"什么都不做，只报告"——连开浏览器也算副作用
+            Write-Host ("  → DryRun：本会打开 {0}" -f $url) -ForegroundColor Cyan
+            exit 0
+        }
+        Write-Host ("  → 直接打开 {0}" -f $url) -ForegroundColor Cyan
+        try { Start-Process $url } catch { Write-Host '    （打开浏览器失败，请手动访问上面的地址）' -ForegroundColor Yellow }
+        exit 0
+    }
     Write-Host '    → 现有宿主仍在提供服务：直接用它即可；要换新宿主，先停掉旧进程再运行本脚本。' -ForegroundColor Yellow
     Write-Host '    → 提示：本脚本注入的前置（代理/密钥/skill 根）只在**由本脚本启动**的宿主里生效。' -ForegroundColor Yellow
+    Write-Host '    → 想双击即用：加 -OpenWhenRunning（桌面快捷方式就是这么做的）。' -ForegroundColor DarkGray
     if (-not $DryRun) {
         Write-Host '── 不再尝试启动（避免注定失败的启动）───────────────' -ForegroundColor Cyan
         exit 2
@@ -165,9 +196,17 @@ if ($DryRun) {
 # ── 4. 启动 ────────────────────────────────────────────────────────────────
 Write-Host '── 启动 dsh web ────────────────────────────────────' -ForegroundColor Cyan
 Write-Host ("  working dir: {0}" -f $repoRoot)
+Write-Host ("  地址: http://127.0.0.1:{0}   （宿主运行中；Ctrl+C 或关闭本窗口即停止）" -f $Port) -ForegroundColor Green
 Push-Location $repoRoot
 try {
     if ($Port -eq 3080) { dsh web } else { dsh web --port $Port }
 } finally {
     Pop-Location
+}
+
+# 交互模式：宿主退出（正常 Ctrl+C 或异常）后停住，让用户看清最后几行信息。
+# 双击场景里窗口一闪而过是最糟的体验——出错时尤其如此。
+if ($Interactive) {
+    Write-Host '── 宿主已退出。按任意键关闭本窗口 ──────────────────' -ForegroundColor Cyan
+    $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
 }

@@ -73,4 +73,42 @@ describe('PowerShell 脚本编码（PS 5.1 + 中文 = 必须带 UTF-8 BOM）', (
       expect(text, `启动脚本缺少 ${required}`).toContain(required)
     }
   })
+
+  it('桌面入口：安装器生成的 .cmd 必须是纯 ASCII，且行为开关齐全', async () => {
+    // 端到端验证安装器：写到临时目录 → 读回校验。
+    // 用 stdio:'ignore' 而不是管道：本 harness 的沙箱禁止用管道捕获子进程输出。
+    const { execFileSync } = await import('node:child_process')
+    const { mkdtemp, readFile: read, rm } = await import('node:fs/promises')
+    const { tmpdir } = await import('node:os')
+
+    const dir = await mkdtemp(join(tmpdir(), 'cvagent-launcher-'))
+    try {
+      const launcherPath = join(dir, 'launch.cmd')
+      const script = join(REPO_ROOT, 'scripts', 'install-desktop-shortcut.ps1')
+      execFileSync('powershell.exe', [
+        '-NoProfile',
+        '-ExecutionPolicy', 'Bypass',
+        '-File', script,
+        '-LauncherPath', launcherPath,
+        '-NoStartMenu',
+      ], { stdio: 'ignore', timeout: 60_000 })
+
+      const bytes = await read(launcherPath)
+      // cmd.exe 按 OEM 代码页（中文 Windows = 936）读 .cmd：非 ASCII 会变乱码，
+      // 而带 BOM 又会让首行 `@echo off` 报错。因此生成物必须是纯 ASCII、无 BOM。
+      const nonAscii = [...bytes].filter((byte) => byte > 127)
+      expect(nonAscii, `生成的 .cmd 含 ${nonAscii.length} 个非 ASCII 字节，在 cmd.exe 下会乱码`).toEqual([])
+
+      const text = bytes.toString('ascii')
+      expect(text.startsWith('@echo off')).toBe(true)
+      expect(text).toContain('-ExecutionPolicy Bypass')
+      expect(text).toContain('-OpenWhenRunning') // 已在运行时打开浏览器
+      expect(text).toContain('-Interactive') // 出错时窗口不闪退
+      expect(text).toContain('%*') // 参数透传（-DryRun 排查用）
+      expect(text).toContain('start-dsh-web.ps1')
+      expect(text).toContain('pause') // 非零退出时停住，让用户看清原因
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
 })

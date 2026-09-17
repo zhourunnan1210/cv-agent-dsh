@@ -68,6 +68,39 @@ data/                         运行期数据（gitignore）
 
 ## 快速开始
 
+### 一键启动（推荐）
+
+桌面入口：双击 **「启动 CV-Research」**（开始菜单搜 `cv` 也有一个）。行为：
+
+- 宿主已在运行 → 直接打开浏览器（不会重复起宿主）
+- 宿主没运行 → **注入必需的前置**（代理 / 密钥 / skill 根）后启动
+- 代理客户端没开 → 提示并等你启动，避免起出一个"没有检索工具"的宿主
+
+首次在新机器/新用户上安装这个入口：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install-desktop-shortcut.ps1
+# 只装桌面、不装开始菜单：加 -NoStartMenu
+```
+
+只想检查环境、不启动宿主：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start-dsh-web.ps1 -DryRun
+```
+
+> ⚠️ **不要用裸 `dsh web` 启动**。它不会注入下面这些前置，而缺失的后果是**静默的**
+> （工具消失、不报错），详见「已知工程约束」里的 E29：
+> `HTTPS_PROXY` + `NODE_USE_ENV_PROXY=1`（Asta 的 MCP transport 是 fetch，两者缺一不可）、
+> `NO_PROXY`（含 MinerU 的三个国内域名）、`CV_PROJECT_SKILLS_DIR` / `CV_PLUGIN_SKILLS_DIR`
+> （skill 根，与工作区解耦）、`ASTA_API_KEY` / `MINERU_TOKEN`（从 `.env.local` 读入）。
+>
+> 另注：仓库里的 `.ps1` 含中文，**必须带 UTF-8 BOM**——Windows PowerShell 5.1
+> 读无 BOM 的脚本会按 GBK 解码、中文变乱码并**在解析期直接报错**（E28）。
+> `pnpm test` 里的 `tests/ps1-encoding.test.ts` 会拦住这个回归。
+
+### 开发流程
+
 ```bash
 pnpm install                          # 构建 vendored dsh-ai4scholar + core + dsh-plugin
 pnpm typecheck                        # 全 workspace 类型检查
@@ -89,8 +122,9 @@ $env:ASTA_API_KEY='<key>'; $env:HTTPS_PROXY='http://127.0.0.1:10808'; $env:NODE_
 node tests/spike-asta-mcp.mjs                         # 装载 → 注册 → 真实执行 → 卸载（5 条断言）
 ```
 
-测试分布：`core` 17 条（门控语义 8 + 授权模型 9）、`dsh-plugin` 27 条（状态持久化 10 +
-状态族工具管线 11 + 主编排护栏 6）、`vendor` 上游自带 88 条（2 skipped）。
+测试分布：`core` 53 条（门控语义 8 + 授权模型 9 + 打分确定性层 19 + 阶段判据 10 + 状态机 7）、
+`dsh-plugin` 116 条（状态持久化 / 状态族工具管线 / 三库检索与读写 / Reader·Scout·Analyst 委派 /
+idea 生成与打分 / 主编排护栏 / 脚本编码护栏）、`vendor` 上游自带 88 条（2 skipped）。
 
 > `lib/` 构建产物不入库，由 `pnpm install` 的 `prepare` 脚本现场生成；
 > 若 `node_modules` 已存在而 `lib/` 缺失，手动执行 `pnpm -r run build`。
