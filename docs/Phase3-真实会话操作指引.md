@@ -166,7 +166,7 @@ node scripts/check-md-paths.mjs            # 完整性：md_path 是否都能读
 
 | 现象 | 可能原因 | 处理 |
 | --- | --- | --- |
-| cv-research 会话里一个 `cvagent_*` 都没有 | preset 挂载失败（一行坏掉全份挂载失败） | `node scripts/check-preset.mjs`；看宿主窗口的报错 |
+| cv-research 会话里一个 `cvagent_*` 都没有 | preset 挂载失败（一行坏掉全份挂载失败，E19/E30） | ① `node scripts/check-preset.mjs` 看结构；② `node scripts/probe-preset-rows.mjs` 在新进程里逐行试挂（**能给出与宿主逐字相同的报错**，如 `cannot get property "systemPrompt" without inject`）；③ 看宿主窗口的报错 |
 | 有 `cvagent_*` 但没有 `mcp__asta__*` | 前置缺失（key / 代理 / `NODE_USE_ENV_PROXY`） | `start-dsh-web.ps1 -DryRun` 逐项检查后重启宿主 |
 | 改了 preset/插件但行为没变 | 运行中的宿主缓存模块与 exports（E21） | 重启宿主 |
 | `advance` 永远不达标 | 判据读的是真实数字：`sub_domain` / 论文 / 解析 / 提取 / 四库条目 | 看 `facts_json` 对号入座 |

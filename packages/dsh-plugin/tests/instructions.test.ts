@@ -5,6 +5,13 @@
  * - 章节按名字注册、可卸载（effect 归属当前 fiber）；
  * - 渲染出的文本包含**三条硬规则**与文档路径（这些是跨步骤约束，缺一条就等于没约束）；
  * - `order` 排在 state 的动态章节之后（约定是"长期背景"，不该插在阶段上下文前面）。
+ *
+ * ⚠️ **挂载时必须用模块自己的 `inject` 声明**（`instructions.inject`），不能在这里
+ * 手写一份：本文件原来写的是 `inject: ['systemPrompt']`，于是**替行模块补齐了依赖**，
+ * 而 `instructions.ts` 自己漏了声明——直到用户切换 preset 时才炸：
+ * `cannot get property "systemPrompt" without inject`（整份 preset 挂载失败）。
+ * 测"插件声明"就得让它以**自己的声明**去挂，否则测的是测试自己的正确性。
+ * 静态侧的兜底见 `tests/row-inject.test.ts`。
  */
 import { describe, expect, it } from 'vitest'
 import { createRequire } from 'node:module'
@@ -51,6 +58,10 @@ describe('项目约定章节的渲染（纯函数）', () => {
 })
 
 describe('章节在真实 system prompt 上注册/卸载', () => {
+  it('模块自己声明了 systemPrompt（缺它 = 切换 preset 直接失败）', () => {
+    expect(instructions.inject).toContain('systemPrompt')
+  })
+
   it('注册后出现在装配结果里，卸载后消失（生命周期红线）', async () => {
     const app = new cordis.Context()
     await app.plugin({
@@ -60,9 +71,10 @@ describe('章节在真实 system prompt 上注册/卸载', () => {
       },
     })
 
+    // 用模块自己的 inject 声明挂载：漏声明会在这里就抛，而不是等到用户切换 preset。
     const fork = await app.plugin({
       name: 'conventions',
-      inject: ['systemPrompt'],
+      inject: [...instructions.inject],
       apply(ctx) {
         instructions.default(ctx, { repoRoot: '.' })
       },

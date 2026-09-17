@@ -22,6 +22,20 @@ export const name = 'cvagent-instructions'
 export const SECTION_NAME = 'cvagent:conventions'
 
 /**
+ * 声明依赖的服务。
+ *
+ * ⚠️ **必须声明，否则整份 preset 挂载失败**（2026-09-17 实测的真故障）：
+ * `apply` 里访问 `ctx.systemPrompt`，而 Cordis 要求按属性访问服务前先在 `inject` 里
+ * 声明，否则抛 `cannot get property "systemPrompt" without inject`。这个错误发生在
+ * **切换 preset 时**，用户看到的是「无法切换到 CV Research Orchestrator」，
+ * 而不是"某一行漏了 inject"——与 E19 同类的爆炸半径。
+ *
+ * （`ProjectStateService` 用的是 `static inject`；功能型插件用命名 `inject` 导出，
+ * loader 两者都认。`tests/row-inject.test.ts` 会静态扫出漏声明。）
+ */
+export const inject = ['systemPrompt']
+
+/**
  * 默认的项目根：与 projectState 的 projectDir 默认值同源（`data/projects/default`）。
  * 实验目录据此拼出绝对路径提示，避免 agent 在错误的 cwd 下找 `experiments/`。
  */

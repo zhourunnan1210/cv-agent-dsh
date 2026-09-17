@@ -29,4 +29,6 @@ if (result.problems.length > 0) {
   console.error('\n（这些都会导致宿主重启时 preset 挂载失败，而报错只在宿主日志里）')
   process.exit(1)
 }
-console.log('\nPRESET STATIC CHECK OK —— 结构可挂载（运行期行为仍需宿主重启验证）')
+console.log('\nPRESET STATIC CHECK OK —— 结构可挂载')
+console.log('（这只证明结构对。行模块能不能真的 apply，用 node scripts/probe-preset-rows.mjs 在')
+console.log('  新进程里逐行试挂——E30 那次"漏 inject"就是结构全对、装载才炸。）')
