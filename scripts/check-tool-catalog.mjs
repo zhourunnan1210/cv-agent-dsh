@@ -53,6 +53,7 @@ const kbEntries = await import(lib('kb/entry-tools.js'))
 const kbResearch = await import(lib('kb/research-tools.js'))
 const { IdeaScoreService } = await import(lib('scoring/service.js'))
 const ideaTools = await import(lib('scoring/tools.js'))
+const domainTools = await import(lib('domain/tools.js'))
 const { ASTA_TOOL_NAMES, DOMAIN_TOOLS, IDEA_TOOLS, KB_TOOLS, STATE_TOOLS } = await import(lib('tools/names.js'))
 
 // ── 环境（与其它 scripts/*.mjs 同一套：代理 + .env.local；已存在的环境变量优先）──
@@ -121,6 +122,11 @@ const EXPECTED = [
     rowIds: ['tool-cvagent-idea'],
     names: [IDEA_TOOLS.generate, IDEA_TOOLS.score],
   },
+  {
+    family: '领域包',
+    rowIds: ['tool-cvagent-domain'],
+    names: Object.values(DOMAIN_TOOLS),
+  },
 ]
 
 /**
@@ -133,7 +139,6 @@ const EXPECTED = [
  * 自主"，不再做编排工具）。它们留在 `names.ts` 里是历史痕迹，这里显式点名。
  */
 const DECLARED_NOT_WIRED = [
-  ...Object.values(DOMAIN_TOOLS),
   IDEA_TOOLS.expPlan,
   IDEA_TOOLS.expLaunch,
   IDEA_TOOLS.expStatus,
@@ -200,6 +205,7 @@ const ROWS = [
   { id: 'tool-cvagent-kb-entries', apply: () => kbEntries.apply({ tools: runtime, kb }) },
   { id: 'tool-cvagent-kb-research', apply: () => kbResearch.apply({ tools: runtime, kb, get: () => undefined }) },
   { id: 'tool-cvagent-idea', apply: () => ideaTools.apply({ tools: runtime, kb, ideaScore, get: () => undefined }) },
+  { id: 'tool-cvagent-domain', apply: () => domainTools.apply({ tools: runtime, kb }, { packDir: join(dir, 'packs') }) },
 ]
 
 console.log('工具目录体检（cvagent + Asta）')

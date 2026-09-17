@@ -831,7 +831,7 @@ Phase 2 的提取链路是用**假 subagents 提供者**做契约测试的（6 �
 
 | # | 步骤 | 通过判据 |
 | --- | --- | --- |
-| 1 | 新会话选 **CV Research Orchestrator**，看工具目录 | 含 **16 个 `cvagent_*`**（状态与门控 6 + 知识库 8 + idea 2）与 **8 个 `mcp__asta__*`**。⚠️ 别拿 `names.ts` 的 25 个声明名当预期：其中 9 个是「有名字、无行注册」（domain 4 + exp 4 + write_draft 1，exp 四个已撤销）。这条现已可执行：`node scripts/check-tool-catalog.mjs [--with-asta]` |
+| 1 | 新会话选 **CV Research Orchestrator**，看工具目录 | 含 **20 个 `cvagent_*`**（状态与门控 6 + 知识库 8 + idea 2 + **领域包 4**）与 **8 个 `mcp__asta__*`**。⚠️ 别拿 `names.ts` 的 25 个声明名当预期：其中 5 个是「有名字、无行注册」（exp 4 + write_draft 1，exp 四个已撤销）。这条已可执行：`node scripts/check-tool-catalog.mjs [--with-asta]` |
 | 2 | 对一篇**已解析**论文调用 `cvagent_kb_extract` | 返回结构化三字段；`paper_extractions` 新增/更新该 paper_id |
 | 3 | 验证上下文洁净 | 主 Agent 上下文里**没有论文正文**（只有结构化结果）；子代理会话历史不含父会话 |
 | 4 | 验证契约刚性 | 把 `outputSchema` 必需字段之一去掉重跑，子代理应报错而非回自由文本 |
@@ -1241,10 +1241,41 @@ coding harness agent），我们只提供上下文/项目背景。
 Analyst 去重上下文与提案校验、dry_run）；`tests/state-tools.test.ts` 重写为 15 条（真实数字判据 +
 scope_set + idea 计数 + 实验收敛口径 + 三模式达标流水线）。计数：core 53、dsh-plugin 114。
 
+### 12.8 P3-5 已交付：Domain Pack 工具化（2026-09-17）
+
+把 pack 的**生命周期**从脚本搬进会话，并把治理规则做进工具面——工具面补齐到 **20 个**（剩 5 个声明未接线：exp 4 已撤销 + `write_draft`）。
+
+| 工具 | 作用 | 治理点 |
+| --- | --- | --- |
+| `cvagent_domain_bootstrap` | 从当前知识库派生草案落盘 | 派生**确定性**（同输入同草案，测试钉住）；草案可反复覆盖，**不是权威** |
+| `cvagent_domain_freeze` | 冻结 | **必须带 `reviewer` 签名**；契约校验前置；**同版本拒绝重复冻结**（改 pack 必须升版本） |
+| `cvagent_domain_propose_revision` | 基于已冻结版本 + 当前知识库派生**新版本** + **差异摘要** | 修改 pack 的唯一合法入口；评审人看"改了什么"而不是整份新 pack |
+| `cvagent_domain_bind` | 项目绑定到某已冻结版本 | 只接受**已冻结**版本（草案不可绑）；换绑回传旧绑定 |
+
+**三个实现要点（都是为了消灭"两套实现迟早分叉"）**：
+
+1. **派生与校验逻辑只有一份**：`pack-builder.ts`。两个 CLI（`bootstrap-pack.mjs` / `freeze-pack.mjs`）
+   改成薄壳调用同一模块；会话内工具也调它。此前脚本各写一套——"契约校验"那几十行规则一旦不一致，
+   就会出现「脚本说能冻、工具说不能」这类最难查的问题。
+2. **SQL 也只有一份**：`loadPaperRows` / `loadExtractionIds` / `loadEntryRows` 由插件与脚本共用；
+   数据源统一为 `metadata.db`（不再读中间产物 JSON）。
+3. **注册与落盘同处发生**：`domain_packs` / `project_pack_binding` 两张表在 metadata.db，
+   登记方法做在 `kb` 服务上——避免"文件在、注册表没有"的分叉。
+
+**测试抓到三个真 bug（写测试的价值就在这里）**：
+
+| 症状 | 根因 | 修法 |
+| --- | --- | --- |
+| 派生的 `schema_ext` 空 | ext 的包键被硬编码成 `deepfake-detection`，忽略配置 | `packNamespace` 作参数，**缺省等于 `pack_id`**（命名空间约定） |
+| `bootstrap --version 0.2` 写出 ref=0.1 的草案，冻结后污染注册表 | `derive()` 读配置默认值、忽略工具参数 | `derive(packId, version, …)` 显式传参 |
+| `backbone` 被固化成 `enum[1]`（只观测到 CLIP 一个值） | "取值少即枚举"的判据太激进 | 收紧：有规范词表才算 enum，否则**至少 3 个不同取值**——枚举是约束，不能从一两个样本发明 |
+
+新增测试 12 条（`tests/domain-tools.test.ts`）：派生确定性、schema_ext 反映真实 ext 用法、
+空签名被拒、契约不通过被拒、同版本拒绝重冻、修订差异、绑定只认已冻结版本。
+
 ---
 
 ## 附录 A：本次已落地的仓库产物
-
 
 
 ```

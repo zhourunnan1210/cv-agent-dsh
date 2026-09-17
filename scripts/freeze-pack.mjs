@@ -1,24 +1,30 @@
 /**
- * P3-2 · Domain Pack 冻结（**人工评审门**，v1.2 §3.4.4 / `core/src/domain/pack.ts`）。
- *
- * 治理规则（不可跳过，类型级强制）：
- *   - 冻结必须带**评审人签名**；`freezeDomainPack()` 在签名为空时直接抛错——
- *     「空签名等同于跳过评审」；
- *   - 冻结后生成版本号，项目绑定到具体版本；**改 pack 产生新版本，旧项目仍绑旧版本**；
- *   - 因此已存在的版本文件**拒绝覆盖**（要改就 bump 版本）。
+ * Domain Pack 冻结（CLI，**人工评审门**）。
  *
  * 用法：
- *   node scripts/freeze-pack.mjs --dry-run                     # 只校验，不冻结
- *   node scripts/freeze-pack.mjs --reviewer "周润楠"            # 落冻结产物 + 记库
- *   node scripts/freeze-pack.mjs --reviewer "..." --bind        # 同时把当前项目绑到该版本
+ *   node scripts/freeze-pack.mjs --dry-run                       # 只校验（评审前先看能不能过）
+ *   node scripts/freeze-pack.mjs --reviewer "<你的标识>"          # 落冻结产物 + 登记注册表
+ *   node scripts/freeze-pack.mjs --reviewer "..." --bind          # 同时把项目绑到该版本
+ *   node scripts/freeze-pack.mjs --reviewer "..." --version 0.2   # 冻结指定版本
+ *
+ * 治理规则（v1.2 §3.4.4，不可跳过）：
+ *   - 冻结必须带**评审人签名**：`freezeDomainPack` 在签名为空时直接抛错
+ *     （「空签名等同于跳过评审」）；
+ *   - 冻结后产生版本号，项目绑定到该版本；**改 pack 必须升版本，旧项目仍绑旧版本**；
+ *   - 因此已存在的版本文件**拒绝覆盖**。
+ *
+ * ⚠️ 与 `scripts/bootstrap-pack.mjs` 同样的纪律：**校验与冻结逻辑只有一份**，
+ * 在 `packages/dsh-plugin/src/domain/pack-builder.ts`，会话内的
+ * `cvagent_domain_freeze` 工具用的是同一份。脚本自己实现一遍校验，迟早会出现
+ * 「脚本说能冻、工具说不能」。
  */
 
-import { readFile, writeFile, mkdir, access } from 'node:fs/promises'
-import { constants } from 'node:fs'
+import { readFile, writeFile, mkdir } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-import { freezeDomainPack } from '../packages/core/lib/index.js'
 import { PaperDatabase } from '../packages/dsh-plugin/lib/kb/db.js'
+import { freezeDraft, validatePackDraft } from '../packages/dsh-plugin/lib/domain/pack-builder.js'
 
 const args = process.argv.slice(2)
 const optValue = (name) => {
@@ -28,91 +34,35 @@ const optValue = (name) => {
 const dryRun = args.includes('--dry-run')
 const bind = args.includes('--bind')
 const reviewer = optValue('--reviewer')
-const draftPath = optValue('--draft') ?? 'data/packs/deepfake-detection-0.1.draft.json'
-const PROJECT_ID = optValue('--project') ?? 'cv-research-default'
+const packId = optValue('--pack-id') ?? 'deepfake-detection'
+const version = optValue('--version') ?? '0.1'
+const projectId = optValue('--project') ?? 'cv-research-default'
 
+const draftPath = optValue('--draft') ?? resolve('data/packs', `${packId}-${version}.draft.json`)
+const frozenPath = resolve('data/packs', `${packId}-${version}.json`)
+
+if (!existsSync(draftPath)) {
+  console.error(`✗ 找不到草案：${draftPath}`)
+  console.error('  先生成草案：node scripts/bootstrap-pack.mjs（或会话内 cvagent_domain_bootstrap）')
+  process.exit(2)
+}
 const draft = JSON.parse(await readFile(draftPath, 'utf8'))
 
-// ── 契约校验（冻结前的最后一道闸）──────────────────────────────────────────
-const problems = []
-if (typeof draft.ref?.pack_id !== 'string' || draft.ref.pack_id === '') problems.push('ref.pack_id 缺失')
-if (typeof draft.ref?.version !== 'string' || draft.ref.version === '') problems.push('ref.version 缺失')
-if (!Array.isArray(draft.seed_papers) || draft.seed_papers.length === 0) problems.push('seed_papers 为空（pack 必须可溯源到种子论文）')
-for (const store of ['problems', 'methods', 'innovations']) {
-  const fields = draft.schema_ext?.[store]
-  if (fields === undefined || typeof fields !== 'object') {
-    problems.push(`schema_ext.${store} 缺失`)
-    continue
-  }
-  for (const [field, spec] of Object.entries(fields)) {
-    if (!['text', 'enum', 'number', 'boolean'].includes(spec?.type)) problems.push(`schema_ext.${store}.${field}.type 非法：${spec?.type}`)
-    if (spec?.type === 'enum' && (!Array.isArray(spec.values) || spec.values.length === 0)) {
-      problems.push(`schema_ext.${store}.${field} 是 enum 但没有 values`)
-    }
-  }
-}
-if (!Array.isArray(draft.lexicon?.terms) || draft.lexicon.terms.length === 0) problems.push('lexicon.terms 为空')
-for (const term of draft.lexicon?.terms ?? []) {
-  if (typeof term.canonical !== 'string' || !Array.isArray(term.aliases)) problems.push(`lexicon 词条形态非法：${JSON.stringify(term).slice(0, 60)}`)
-}
-if (!Array.isArray(draft.lexicon?.query_expansion) || draft.lexicon.query_expansion.length === 0) problems.push('lexicon.query_expansion 为空')
-if (!Array.isArray(draft.benchmarks?.benchmarks) || draft.benchmarks.benchmarks.length === 0) problems.push('benchmarks.benchmarks 为空')
-if (!Array.isArray(draft.benchmarks?.metrics) || draft.benchmarks.metrics.length === 0) problems.push('benchmarks.metrics 为空')
-if (!Array.isArray(draft.benchmarks?.required_protocols) || draft.benchmarks.required_protocols.length === 0) problems.push('benchmarks.required_protocols 为空')
-
-const scoring = draft.scoring
-const dimensions = scoring?.dimensions ?? {}
-const weightSum = Object.values(dimensions).reduce((sum, value) => sum + (typeof value === 'number' ? value : 0), 0)
-if (weightSum !== 100) problems.push(`scoring.dimensions 权重之和应为 100，实测 ${weightSum}`)
-for (const key of ['novelty_problem', 'novelty_method', 'novelty_combo', 'feasibility']) {
-  if (typeof dimensions[key] !== 'number') problems.push(`scoring.dimensions.${key} 缺失或非数字`)
-}
-if (typeof scoring?.thresholds?.high_risk_similarity !== 'number') problems.push('scoring.thresholds.high_risk_similarity 缺失')
-if (typeof scoring?.thresholds?.topk !== 'number') problems.push('scoring.thresholds.topk 缺失')
-const bands = scoring?.suggestion_bands ?? {}
-for (const key of ['proceed', 'revise', 'abandon']) {
-  const band = bands[key]
-  if (!Array.isArray(band) || band.length !== 2 || band.some((value) => typeof value !== 'number')) {
-    problems.push(`scoring.suggestion_bands.${key} 必须是 [min,max]`)
-  }
-}
-// 档位必须首尾相接、覆盖 0–100（否则会出现「落不进任何档」的分数）
-const ordered = ['abandon', 'revise', 'proceed'].map((key) => bands[key])
-if (ordered.every((band) => Array.isArray(band) && band.length === 2)) {
-  if (ordered[0][0] !== 0) problems.push(`建议档位未从 0 开始（abandon 下界 ${ordered[0][0]}）`)
-  if (ordered[2][1] !== 100) problems.push(`建议档位未到 100（proceed 上界 ${ordered[2][1]}）`)
-  for (let i = 1; i < ordered.length; i += 1) {
-    if (ordered[i][0] !== ordered[i - 1][1] + 1) {
-      problems.push(`建议档位不连续：${ordered[i - 1]} → ${ordered[i]}`)
-    }
-  }
-}
-
-const contract = {
-  ref: draft.ref,
-  seed_papers: draft.seed_papers,
-  schema_ext: draft.schema_ext,
-  lexicon: draft.lexicon,
-  benchmarks: draft.benchmarks,
-  scoring: draft.scoring,
-}
-
+const validation = validatePackDraft(draft)
+const draftVersion = draft.ref?.version ?? '(缺)'
 console.log(`草案：${draftPath}`)
-console.log(`  pack：${draft.ref?.pack_id}@${draft.ref?.version}；种子论文 ${draft.seed_papers?.length ?? 0} 篇`)
-console.log(`  字段：${['problems', 'methods', 'innovations'].map((store) => `${store} ${Object.keys(draft.schema_ext?.[store] ?? {}).length}`).join('、')}`)
-console.log(`  benchmarks ${draft.benchmarks?.benchmarks?.length ?? 0}、metrics ${draft.benchmarks?.metrics?.length ?? 0}、术语 ${draft.lexicon?.terms?.length ?? 0}、改写组 ${draft.lexicon?.query_expansion?.length ?? 0}`)
-console.log(`  权重：${JSON.stringify(dimensions)}（合计 ${weightSum}）；档位：${JSON.stringify(bands)}`)
+console.log(`  pack：${draft.ref?.pack_id}@${draftVersion}`)
+console.log(`  校验：${validation.problems.length === 0 ? '通过' : `未通过 ${validation.problems.length} 条`}`)
+for (const problem of validation.problems) console.error(`  ✗ ${problem}`)
+for (const note of validation.notes) console.warn(`  ⚠ ${note}`)
 
-if (problems.length > 0) {
-  console.error(`\n✗ 契约校验未通过（${problems.length} 条）：`)
-  for (const item of problems) console.error(`  - ${item}`)
+if (validation.problems.length > 0) {
+  console.error('\n✗ 契约校验未通过，拒绝冻结。')
   process.exit(1)
 }
-console.log('\n✓ 契约校验通过')
 
-const outPath = `data/packs/${draft.ref.pack_id}-${draft.ref.version}.json`
 if (dryRun) {
-  console.log(`\nDRY RUN —— 未冻结。将写入 ${outPath}，并把 (${PROJECT_ID}) 绑定到该版本。`)
+  console.log(`\nDRY RUN —— 未冻结。将通过时要写入 ${frozenPath}${bind ? `，并把 (${projectId}) 绑定到该版本` : ''}。`)
   process.exit(0)
 }
 
@@ -122,36 +72,38 @@ if (reviewer === undefined || reviewer.trim() === '') {
   process.exit(2)
 }
 
-// 已冻结的版本拒绝覆盖：改 pack 必须 bump 版本（v1.2 §3.4.4）
-try {
-  await access(outPath, constants.F_OK)
-  console.error(`\n✗ 版本 ${draft.ref.version} 已冻结（${outPath} 已存在）。`)
+if (existsSync(frozenPath)) {
+  console.error(`\n✗ 版本 ${version} 已冻结（${frozenPath} 已存在）。`)
   console.error('  修改已冻结的 pack 必须升版本（例如 0.2），旧项目仍绑旧版本。')
+  console.error('  会话内推荐做法：cvagent_domain_propose_revision（自动升版本 + 差异摘要）。')
   process.exit(2)
-} catch {
-  // 不存在 = 可以冻结
 }
 
-const frozenAt = new Date().toISOString()
-const frozen = freezeDomainPack(contract, reviewer, frozenAt)
+if (draftVersion !== version) {
+  console.error(`\n✗ 草案里的版本（${draftVersion}）与要冻结的版本（${version}）不一致。`)
+  console.error('  这通常意味着草案是用别的版本参数生成的——版本号必须一致，否则注册表会指错文件。')
+  process.exit(2)
+}
 
-await mkdir('data/packs', { recursive: true })
-await writeFile(outPath, `${JSON.stringify(frozen, null, 2)}\n`)
+const { frozen, contentHash } = freezeDraft(draft, reviewer, new Date().toISOString())
+await mkdir(resolve('data/packs'), { recursive: true })
+await writeFile(frozenPath, `${JSON.stringify(frozen, null, 2)}\n`)
 
 const database = new PaperDatabase('data/papers/metadata.db')
 database.raw
   .prepare('INSERT OR REPLACE INTO domain_packs (pack_id, version, frozen_by, frozen_at, pack_path) VALUES (?, ?, ?, ?, ?)')
-  .run(frozen.ref.pack_id, frozen.ref.version, frozen.frozen_by, frozen.frozen_at, resolve(outPath))
+  .run(frozen.ref.pack_id, frozen.ref.version, frozen.frozen_by, frozen.frozen_at, frozenPath)
 if (bind) {
   database.raw
     .prepare('INSERT OR REPLACE INTO project_pack_binding (project_id, pack_id, version) VALUES (?, ?, ?)')
-    .run(PROJECT_ID, frozen.ref.pack_id, frozen.ref.version)
+    .run(projectId, frozen.ref.pack_id, frozen.ref.version)
 }
-const registered = database.raw.prepare('SELECT pack_id, version, frozen_by, frozen_at FROM domain_packs').all()
+const registered = database.raw.prepare('SELECT pack_id, version, frozen_by FROM domain_packs ORDER BY pack_id, version').all()
 const bindings = database.raw.prepare('SELECT project_id, pack_id, version FROM project_pack_binding').all()
 database.close()
 
-console.log(`\n✓ 已冻结：${outPath}`)
+console.log(`\n✓ 已冻结：${frozenPath}`)
 console.log(`  frozen_by=${frozen.frozen_by}  frozen_at=${frozen.frozen_at}`)
+console.log(`  内容哈希=${contentHash}（审计时用于比对内容是否被改动）`)
 console.log(`  注册表 domain_packs：${JSON.stringify(registered)}`)
 console.log(`  绑定 project_pack_binding：${JSON.stringify(bindings)}${bind ? '' : '（未 --bind）'}`)

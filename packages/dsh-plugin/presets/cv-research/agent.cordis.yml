@@ -121,6 +121,14 @@
     - id: tool-cvagent-idea
       name: cv-agent-dsh/idea-tools
 
+    # P3-5: cvagent_domain_bootstrap / _freeze / _propose_revision / _bind —
+    # Domain Pack 的生命周期（派生草案 → 人工签名冻结 → 升版本修订 → 项目绑定）。
+    # 放在本 group 内：派生要读 kb（论文/提取/四库条目），冻结要写 domain_packs
+    # 注册表，而注册表就在同一个 metadata.db 里——注册与落盘必须同处发生，
+    # 否则会出现"文件在、注册表没有"的分叉。
+    - id: tool-cvagent-domain
+      name: cv-agent-dsh/domain-tools
+
 # ── orchestrator execution-level guard (E20) ───────────────────────────────
 #
 # Provides no service — consumes the host `tools` event surface and the host
