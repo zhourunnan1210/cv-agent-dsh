@@ -80,8 +80,16 @@ if (mode === 'prepare') {
   console.log('\n请执行（stdout/stderr 一律落文件，避免管道被沙箱拒绝）：')
   console.log('  ⚠ 必须带 UTF-8 环境变量：Windows 下 Python 默认按 GBK 写 stdout，')
   console.log('    作者名含非 GBK 字符（如 ł）时，整个 JSON 信封会写不出来——前面的下载全白费（E34）。')
-  console.log(`  $env:PYTHONUTF8=1; $env:PYTHONIOENCODING="utf-8"; python ${SKILL} --batch ${BATCH_FILE} --out ${PDF_DIR} --format json > ${ENVELOPE_FILE} 2> data/papers/fetch-stderr.ndjson`)
+  // 本地修改（2026-09-17）：把 .env.local 的取用开关一并显式带上。
+  // 理由：--prepare 是本流程唯一的入口，操作者照抄的就是这里打印的命令；而
+  // fetch.py 自己**不读** .env.local（它只认环境变量），漏带就会静默退回默认值——
+  // 正是合规红线 #1 担心的"忘记设环境变量"那种失败方式。
+  const envPrefix = '$env:PYTHONUTF8=1; $env:PYTHONIOENCODING="utf-8"; $env:PAPER_FETCH_ALLOW_SCIHUB=1;'
+  console.log(`  ${envPrefix} python ${SKILL} --batch ${BATCH_FILE} --out ${PDF_DIR} --format json > ${ENVELOPE_FILE} 2> data/papers/fetch-stderr.ndjson`)
   console.log(`  node scripts/fetch-fulltext.mjs --ingest`)
+  console.log('')
+  console.log('  注：SCI-HUB 那面旗子来自 .env.local（2026-09-17 用户批准临时启用，见')
+  console.log('     docs/E34-scihub-临时启用记录.md）；不要它会退回"仅开放获取"的合规默认值。')
   console.log('')
   console.log('  arXiv HTTPS 在本机被拦（一律 406）。带 arXiv ID 的论文改用定向取用脚本（走 export.arxiv.org 的 http 通道 + 分块重试）：')
   console.log(`  $env:PYTHONUTF8=1; python scripts/fetch-arxiv-pdf.mjs --prepare   # 生成清单`)

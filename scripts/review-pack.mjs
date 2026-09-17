@@ -26,8 +26,19 @@ console.log(`  权重：${JSON.stringify(draft.scoring.dimensions)}（合计 ${O
 console.log(`  阈值：${JSON.stringify(draft.scoring.thresholds)}`)
 console.log(`  档位：${JSON.stringify(draft.scoring.suggestion_bands)}`)
 console.log(`\n【provenance】派生依据`)
+// 旧草案（`bootstrap-pack.mjs` 只写 draft 的那个版本）没有这一段。**不要崩**——
+// 评审工具在最需要它的时候挂掉，等于把"为什么纳入这些 benchmark"彻底藏起来。
 const p = draft.provenance
-console.log(`  论文 ${p.papers} 篇（已解析 ${p.parsed}）、提取 ${p.extractions} 篇、三库条目 ${JSON.stringify(p.entries)}`)
-console.log(`  benchmark 全量名（含一次性出现）：${p.all_benchmark_names.join(', ')}`)
-console.log(`  被排除的通用视觉数据集：${p.excluded_non_deepfake_benchmarks.join(', ') || '(无)'}`)
-console.log(`  高频 baseline（≥4 篇）：${p.top_baselines.slice(0, 10).join(', ')}`)
+if (p === undefined) {
+  console.log('  ⚠️ 这份草案里没有 provenance（生成它的脚本版本较旧）。')
+  console.log('     重新派生一次即可带上：node scripts/bootstrap-pack.mjs --out <同一路径>')
+} else {
+  console.log(`  论文 ${p.papers} 篇${p.parsed_papers === undefined ? '' : `（已解析 ${p.parsed_papers}）`}、提取 ${p.extractions} 篇、四库条目 ${JSON.stringify(p.entries)}`)
+  // 两组全量是评审重点：纳入表只列"够格进 pack"的，排除表列"看着像但不是本领域"的；
+  // 评审要问的是"有没有该进没进的"，那必须看见全部观测值。
+  console.log(`  benchmark 全量（含只出现 1 次的）：${(p.all_benchmark_names ?? []).join(', ') || '(无)'}`)
+  console.log(`  纳入 pack 的 benchmark：${(p.included_benchmarks ?? []).join(', ') || '(无)'}`)
+  console.log(`  被排除的通用视觉数据集/预训练语料：${(p.excluded_non_deepfake_benchmarks ?? []).join(', ') || '(无)'}`)
+  console.log(`  高频 metric：${(p.top_metrics ?? []).join(', ') || '(无)'}`)
+  console.log(`  高频 baseline：${(p.top_baselines ?? []).join(', ') || '(无)'}`)
+}

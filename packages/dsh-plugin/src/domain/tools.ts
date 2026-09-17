@@ -80,7 +80,13 @@ export function apply(ctx: Context, config: Config = {}): void {
    * 后续冻结会把它注册成 0.1 并覆盖旧登记（这条在测试里被抓到过）。
    */
   const derive = (packId: string, version: string, generatedBy: string) => derivePackDraft(
-    { papers: kb.listPapersForPack(), extractions: kb.listExtractions(), entries: kb.listEntries() },
+    {
+      papers: kb.listPapersForPack(),
+      extractions: kb.listExtractions(),
+      entries: kb.listEntries(),
+      // 已解析篇数进溯源：只报论文总数会把"多数只有元数据"的库说成素材很足
+      ...(typeof kb.parsedCount === 'function' ? { parsedPapers: kb.parsedCount() } : {}),
+    },
     { packId, version, generatedBy, packNamespace: options.packNamespace },
   )
 
@@ -128,7 +134,11 @@ export function apply(ctx: Context, config: Config = {}): void {
       }
       const path = draftPath(packId, version)
       await mkdir(options.packDir, { recursive: true })
-      await writeFile(path, `${JSON.stringify(derived.draft, null, 2)}\n`)
+      // **provenance 与草案一起落盘**（与 `scripts/bootstrap-pack.mjs` 同一形状）：
+      // 评审人要回答"为什么纳入/排除这些 benchmark、这份 pack 建立在多少可读全文上"，
+      // 而工具返回值里那份 provenance_json 会随会话上下文一起被压缩掉。
+      // 冻结时 `freezeDraft` 只保留契约字段，所以它不会污染冻结产物。
+      await writeFile(path, `${JSON.stringify({ ...derived.draft, provenance: derived.provenance }, null, 2)}\n`)
       // 用落盘后的草案做校验：校验的必须是"评审人将要看的那份文件"
       const validation = validatePackDraft(JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>)
       return {

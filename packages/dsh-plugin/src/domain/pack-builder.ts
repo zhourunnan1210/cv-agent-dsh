@@ -32,6 +32,14 @@ export interface PackSource {
   readonly papers: readonly { paper_id: string; title: string; year: number | null; venue: string | null }[]
   readonly extractions: readonly PaperExtraction[]
   readonly entries: readonly { entry_id: string; store: StoreName; statement: string; ext: Record<string, Record<string, unknown>> }[]
+  /**
+   * 已解析全文的论文数（可选）。
+   *
+   * 为什么单列：审阅 pack 时要回答"这份 pack 是从多少可读全文里得出的"——
+   * 只报论文总数会把"243 篇只有元数据"的库说成"素材很足"。缺省时溯源里不写这个数
+   * （而不是写 0：0 会被读成"一篇都没解析"）。
+   */
+  readonly parsedPapers?: number
 }
 
 /** 派生结果：草案 + 溯源统计。 */
@@ -283,11 +291,19 @@ export function derivePackDraft(source: PackSource, options: DeriveOptions): Der
 
   const provenance = {
     papers: source.papers.length,
+    ...(source.parsedPapers === undefined ? {} : { parsed_papers: source.parsedPapers }),
     extractions: source.extractions.length,
     entries: Object.fromEntries(STORE_NAMES.map((store) => [store, source.entries.filter((entry) => entry.store === store).length])),
     observed_ext_fields: Object.fromEntries([...extInventory.entries()].map(([store, fields]) => [store, [...fields.keys()]])),
     included_benchmarks: [...includedBenchmarks.entries()].sort((a, b) => b[1] - a[1]).map(([name, count]) => `${name}(${count})`),
     excluded_non_deepfake_benchmarks: [...excludedBenchmarks.entries()].map(([name, count]) => `${name}(${count})`),
+    /**
+     * **全量** benchmark 名（含只出现一次的自由文本名）。
+     *
+     * 与 `included_benchmarks` 的区别是审阅的关键：纳入表只列"够格进 pack"的，
+     * 而评审要问的是"有没有该进没进的"——那需要看见全部观测值。
+     */
+    all_benchmark_names: [...allBenchmarks.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([name, count]) => `${name}(${count})`),
     top_metrics: rank(metrics, 2).map(([name, count]) => `${name}(${count})`),
     top_baselines: rank(baselineCount, 4).map(([name, count]) => `${name}(${count})`),
   }
@@ -475,8 +491,14 @@ export function loadPaperRows(db: PaperDatabase): { paper_id: string; title: str
     .all() as unknown as { paper_id: string; title: string; year: number | null; venue: string | null }[]
 }
 
-/** 有提取结果的 paper_id 列表（按 paper_id 排序，保证确定性）。 */
-export function loadExtractionIds(db: PaperDatabase): string[] {
+/** 已解析全文的论文数（PackSource 的 `parsedPapers` 来源）。 */
+export function loadParsedPaperCount(db: PaperDatabase): number {
+  return (db.raw
+    .prepare("SELECT COUNT(*) AS c FROM papers WHERE md_path IS NOT NULL AND md_path != ''")
+    .get() as { c: number }).c
+}
+
+/** 有提取结果的 paper_id 列表（按 paper_id 排序，保证确定性）。 */export function loadExtractionIds(db: PaperDatabase): string[] {
   return db.raw
     .prepare('SELECT paper_id FROM paper_extractions ORDER BY paper_id')
     .all()

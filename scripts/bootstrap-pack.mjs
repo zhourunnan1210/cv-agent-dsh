@@ -25,6 +25,7 @@ import {
   loadEntryRows,
   loadExtractionIds,
   loadPaperRows,
+  loadParsedPaperCount,
   summarizeDraft,
   validatePackDraft,
 } from '../packages/dsh-plugin/lib/domain/pack-builder.js'
@@ -44,6 +45,7 @@ const library = new PaperLibrary(database)
 
 const source = {
   papers: loadPaperRows(database),
+  parsedPapers: loadParsedPaperCount(database),
   extractions: loadExtractionIds(database)
     .map((paperId) => library.getExtraction(paperId))
     .filter((extraction) => extraction !== undefined),
@@ -58,7 +60,10 @@ const { draft, provenance } = derivePackDraft(source, {
 })
 
 await mkdir(dirname(out), { recursive: true })
-await writeFile(out, `${JSON.stringify(draft, null, 2)}\n`)
+// ⚠️ **provenance 必须与草案一起落盘**。以前只写 `draft`，于是"为什么纳入/排除这些
+// benchmark、从多少篇里派生出来的"只在生成时打印一次就丢了——而人工评审（§12.5）
+// 恰恰要看这一段。冻结时 `freezeDraft` 只保留契约字段，所以它不会污染冻结产物。
+await writeFile(out, `${JSON.stringify({ ...draft, provenance }, null, 2)}\n`)
 const validation = validatePackDraft(draft)
 database.close()
 

@@ -255,6 +255,38 @@ describe('领域包族工具（真实文件 + 真实注册表）', () => {
     const provenance = JSON.parse(result.value.provenance_json)
     expect(provenance.excluded_non_deepfake_benchmarks.join(' ')).toMatch(/ImageNet/)
   })
+
+  /**
+   * provenance 必须**落到草案文件里**，不能只在工具返回值里。
+   *
+   * 起因（2026-09-17）：`scripts/review-pack.mjs` 读 `draft.provenance`，而
+   * `bootstrap-pack.mjs` 与工具都只写 `draft` —— 于是评审视图在最后一段崩溃，
+   * "为什么纳入/排除这些 benchmark"在生成后就再也看不到（§12.5 恰恰要求评审人看它）。
+   * 工具返回值里那份 `provenance_json` 也救不了：它会随会话上下文一起被压缩掉。
+   */
+  it('provenance 与草案一起落盘（评审视图不依赖工具返回，也不依赖会话上下文）', async () => {
+    env = await makeEnv()
+    kbAddImageNet(env)
+    const result = await env.execute(DOMAIN_TOOLS.bootstrap, {})
+    const onDisk = JSON.parse(await readFile(String(result.value.draft_path), 'utf8'))
+
+    expect(onDisk.provenance, '草案文件里必须有 provenance：评审发生在生成之后，可能隔天').toBeDefined()
+    // §12.5 说的"两组全量"：纳入清单 + 排除清单，评审人要能对账
+    expect(onDisk.provenance.included_benchmarks.length).toBeGreaterThan(0)
+    expect(onDisk.provenance.excluded_non_deepfake_benchmarks.join(' ')).toMatch(/ImageNet/)
+    expect(onDisk.provenance.all_benchmark_names.join(' ')).toMatch(/ImageNet/)
+    // 已解析篇数（"这份 pack 建立在多少可读全文上"）
+    expect(onDisk.provenance.parsed_papers).toBeGreaterThan(0)
+  })
+
+  it('冻结产物里**没有** provenance（它不属于 pack 契约）', async () => {
+    env = await makeEnv()
+    await env.execute(DOMAIN_TOOLS.bootstrap, {})
+    await env.execute(DOMAIN_TOOLS.freeze, { reviewer: '评审人-A' })
+    const frozen = JSON.parse(await readFile(join(env.packDir, 'demo-pack-0.1.json'), 'utf8'))
+    expect(frozen.provenance, 'provenance 是派生的审计信息，不该进冻结契约').toBeUndefined()
+    expect(frozen.ref).toMatchObject({ pack_id: 'demo-pack', version: '0.1' })
+  })
 })
 
 /** 追加一条"通用视觉数据集"提取，验证排除逻辑在执行路径上也成立。 */
