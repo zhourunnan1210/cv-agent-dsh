@@ -94,6 +94,13 @@ const STANDARD_ENUM_VALUES: Record<string, string[]> = {
 /** 与 pack 无关的字段：条目间引用由 link-entry-ids 机械维护，不属领域扩展。 */
 const RELATION_FIELDS = new Set(['related_problem_ids', 'related_method_ids'])
 
+/** 音视频源语料：单独列出，便于审阅"为什么它们算 benchmark"（见 NOT_A_DEEPFAKE_BENCHMARK 的说明）。 */
+const AUDIOVISUAL_SOURCE_CORPORA: { canonical: string; aliases: RegExp[] }[] = [
+  { canonical: 'VoxCeleb2', aliases: [/^voxceleb2?$/i] },
+  { canonical: 'LRS2', aliases: [/^lrs2$/i] },
+  { canonical: 'LRS3', aliases: [/^lrs3$/i] },
+]
+
 /** 数据集别名归一（语料里同一数据集的多种写法）。 */
 const BENCHMARK_CANONICAL: { canonical: string; aliases: RegExp[] }[] = [
   { canonical: 'FaceForensics++', aliases: [/^faceforensics\+\+/i, /^ff\+\+/i, /^faceforensics \+\+/i] },
@@ -115,10 +122,19 @@ const BENCHMARK_CANONICAL: { canonical: string; aliases: RegExp[] }[] = [
   { canonical: 'DiffusionForensics', aliases: [/^diffusionforensics/i] },
   { canonical: 'UniversalFakeDetect', aliases: [/^universalfakedetect/i] },
   { canonical: 'ASVspoof', aliases: [/^asvspoof/i] },
+  ...AUDIOVISUAL_SOURCE_CORPORA,
 ]
 
-/** 通用视觉数据集 / 预训练语料不进 pack（它们不是深伪检测 benchmark）。 */
-const NOT_A_DEEPFAKE_BENCHMARK = [/^imagenet/i, /^coco/i, /^ade20k/i, /^lrs2/i, /^lrs3/i, /^voxceleb/i, /^lcs-558k/i]
+/**
+ * 通用视觉数据集 / 预训练语料不进 pack（它们不是深伪检测 benchmark）。
+ *
+ * ⚠️ **音视频方向的源语料是例外**（2026-09-17 修）：`VoxCeleb2` / `LRS2` / `LRS3`
+ * 曾被这里一并排除，但本项目明确覆盖**音视频深伪**（pack 里有 `AV-Deepfake1M`、
+ * `FakeAVCeleb`，`modality` 有 `audio_visual`）——而这两个恰好是构造音视频伪造的
+ * **源语料**（FakeAVCeleb 就是从 VoxCeleb2 造出来的），音视频论文会正当地把它们
+ * 列进实验设置。把它们当"通用视觉数据集"排除，等于把该方向的一半实验基础挡在门外。
+ */
+const NOT_A_DEEPFAKE_BENCHMARK = [/^imagenet/i, /^coco/i, /^ade20k/i, /^lcs-558k/i]
 
 /** 指标同义词归一。 */
 const METRIC_CANONICAL: { canonical: string; aliases: RegExp[] }[] = [
@@ -186,6 +202,13 @@ export function derivePackDraft(source: PackSource, options: DeriveOptions): Der
   }
 
   const schemaExt: Record<string, Record<string, ExtensionFieldSpec>> = {}
+  /**
+   * 越界观测值：有规范词表的字段，语料里却出现了词表外的写法。
+   *
+   * 这些值**不进 enum**（enum 是约束，不是"大家写过什么"的集合），但必须让评审人看见：
+   * 要么词表该扩，要么提取/归纳那一步该纠正用词。进溯源是唯一的去处。
+   */
+  const vocabularyMismatches = new Map<string, string[]>()
   for (const store of STORE_NAMES) {
     const fields: Record<string, ExtensionFieldSpec> = { ...(DECLARED_FIELDS[store] ?? {}) }
     for (const [field, values] of extInventory.get(store) ?? []) {
@@ -204,22 +227,37 @@ export function derivePackDraft(source: PackSource, options: DeriveOptions): Der
       }
       const observed = [...new Set(strings.map((value) => value.replace(/-/g, '_')))].sort()
       /**
-       * 固化 enum 的判据（**保守**）：
-       * - 该字段在 `STANDARD_ENUM_VALUES` 里有规范词表 → 直接 enum（这是明确的知识）；
+       * 固化 enum 的判据：
+       * - 该字段在 `STANDARD_ENUM_VALUES` 里有规范词表 → **enum 就是那份词表本身**；
        * - 否则要求**至少 3 个不同取值**且都短（≤40 字符）且不超过 12 个。
        *
        * 为什么不能只看"取值少"：自由文本字段在语料里可能只出现 1–2 个值
        * （如 `backbone` 恰好全是 `CLIP`），按"少即枚举"会把它固化成 `enum[1]`，
        * 之后 Analyst 填别的骨干名就会被判非法。**枚举是约束，不能从一两个样本发明**。
+       *
+       * ⚠️ **规范词表存在时，观测值不再并进 enum**（2026-09-17 修）：
+       * 此前是 `[...standard, ...observed]`，于是 `detection_target` 的 7 项词表
+       * 被 21 条 Analyst 写的自由描述（"低延迟/边缘部署场景下的 deepfake 检测"…）
+       * 撑成了 21 项。那不是词表，是"大家写过什么"——而 enum 的作用恰恰是**约束**
+       * （同一个概念只能有一种写法）。观测到的越界值进溯源，由评审人决定要不要扩词表。
        */
       const standard = STANDARD_ENUM_VALUES[field] ?? []
-      const looksLikeEnum = standard.length > 0
-        || (observed.length >= 3 && observed.length <= 12 && observed.every((value) => value.length <= 40))
+      if (standard.length > 0) {
+        const offVocab = observed.filter((value) => !standard.includes(value))
+        if (offVocab.length > 0) vocabularyMismatches.set(field, offVocab)
+        fields[field] = {
+          type: 'enum',
+          values: [...standard].sort(),
+          extraction_hint: `取值必须是下列之一（snake_case）：${standard.join(' / ')}`,
+        }
+        continue
+      }
+      const looksLikeEnum = observed.length >= 3 && observed.length <= 12 && observed.every((value) => value.length <= 40)
       fields[field] = looksLikeEnum
         ? {
             type: 'enum',
-            values: [...new Set([...standard, ...observed])].sort(),
-            extraction_hint: `取值必须是下列之一（snake_case；语料实测已出现：${observed.join(' / ') || '无'}）`,
+            values: observed,
+            extraction_hint: `取值必须是下列之一（snake_case；语料实测已出现：${observed.join(' / ')}）`,
           }
         : { type: 'text', extraction_hint: `自由文本（描述性）。实测样例：${observed.slice(0, 2).join(' / ')}` }
     }
@@ -295,6 +333,8 @@ export function derivePackDraft(source: PackSource, options: DeriveOptions): Der
     extractions: source.extractions.length,
     entries: Object.fromEntries(STORE_NAMES.map((store) => [store, source.entries.filter((entry) => entry.store === store).length])),
     observed_ext_fields: Object.fromEntries([...extInventory.entries()].map(([store, fields]) => [store, [...fields.keys()]])),
+    /** 有规范词表却出现越界写法的字段（评审人据此决定扩词表还是纠用词）。 */
+    vocabulary_mismatches: Object.fromEntries([...vocabularyMismatches.entries()].map(([field, values]) => [field, values])),
     included_benchmarks: [...includedBenchmarks.entries()].sort((a, b) => b[1] - a[1]).map(([name, count]) => `${name}(${count})`),
     excluded_non_deepfake_benchmarks: [...excludedBenchmarks.entries()].map(([name, count]) => `${name}(${count})`),
     /**

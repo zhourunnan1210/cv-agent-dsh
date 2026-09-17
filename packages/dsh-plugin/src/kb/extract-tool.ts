@@ -46,6 +46,9 @@ export const READER_PERSONA = [
   'future_work（结论+讨论；没有就空数组）、limitations（局限章节+批判性分析，',
   '包括负面对比结果）、benchmarks（实验用数据集名）、metrics（报告指标名）、',
   'baseline_methods（对比方法名）、extraction_quality。',
+  '⚠️ `benchmarks` 只填**数据集/基准**的名称（如 FaceForensics++、Celeb-DF、GenImage）。',
+  '伪造方法或生成器（FaceSwap、Face2Face、NeuralTextures、StyleGAN3、SDv21…）不是数据集，',
+  '不要放进 benchmarks——它们属于方法/生成器；源语料（VoxCeleb2、LRS2）可以填。',
   '只报告论文里写的事实，不补写、不猜测；没有任何额外输出，',
   '全部内容走结构化输出机制。',
 ].join(' ')

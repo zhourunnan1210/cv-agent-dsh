@@ -12,12 +12,16 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
 
 import { KbService } from '../lib/kb/service.js'
 import * as domainTools from '../lib/domain/tools.js'
 import { DOMAIN_TOOLS } from '../lib/tools/names.js'
+
+/** 行模块源码目录（用于"默认值三处一致"这类静态守卫）。 */
+const SRC = join(fileURLToPath(new URL('.', import.meta.url)), '..', 'src')
 
 const DSH = 'C:/Users/Admin/AppData/Roaming/npm/node_modules/@deepseek-ai/dsh/node_modules/'
 function loadDsh(spec) {
@@ -286,6 +290,99 @@ describe('领域包族工具（真实文件 + 真实注册表）', () => {
     const frozen = JSON.parse(await readFile(join(env.packDir, 'demo-pack-0.1.json'), 'utf8'))
     expect(frozen.provenance, 'provenance 是派生的审计信息，不该进冻结契约').toBeUndefined()
     expect(frozen.ref).toMatchObject({ pack_id: 'demo-pack', version: '0.1' })
+  })
+
+  /**
+   * 有规范词表的字段：**enum 就是词表本身**，观测到的越界写法不进 enum。
+   *
+   * 起因（2026-09-17，真实数据）：`detection_target` 有 7 项标准词表，而派生写的是
+   * `[...standard, ...observed]` —— 14 条 Analyst 写的整句描述（"低延迟/边缘部署场景下的
+   * deepfake 检测"…）把词表撑成 21 项。那就不再是"约束"，而是"大家写过什么"，
+   * enum 的全部意义（同一个概念只有一种写法）随之消失。
+   */
+  it('规范词表字段：enum 恰等于词表；越界写法进溯源而不是进 enum', async () => {
+    env = await makeEnv()
+    // 一条把整句描述写进 detection_target 的条目（真实事故的形态）
+    env.kb.upsertEntry('problems', '低延迟场景下的深伪检测', ['10.1/a'], {
+      'demo-pack': { detection_target: '低延迟/边缘部署场景下的 deepfake 检测', modality: 'visual' },
+    })
+    const result = await env.execute(DOMAIN_TOOLS.bootstrap, {})
+    const draft = JSON.parse(await readFile(String(result.value.draft_path), 'utf8'))
+
+    const spec = draft.schema_ext.problems.detection_target
+    expect(spec.type).toBe('enum')
+    expect(spec.values, 'enum 里不该出现整句描述').not.toContain('低延迟/边缘部署场景下的 deepfake 检测')
+    // 词表是权威：恰好那 7 项（不因为观测少了就缩水，也不因为观测多了就膨胀）
+    expect(spec.values).toEqual(['attribute_manipulation', 'audio_speech', 'entire_synthesis', 'face_reenactment', 'face_swap', 'other', 'partial_region'])
+
+    // 越界值必须让人看见：要么扩词表，要么纠用词
+    expect(draft.provenance.vocabulary_mismatches.detection_target).toContain('低延迟/边缘部署场景下的 deepfake 检测')
+  })
+
+  /**
+   * 三个 `project_id` 默认值必须一致（2026-09-17 发现它们漂了）。
+   *
+   * 事故形态：项目状态用 `cv-research-project`，而 pack 绑定/写作取 pack 用的是
+   * `cv-research-default` —— 于是 `cvagent_state_get` 显示的 project_id
+   * 和 pack 绑定表里的 project_id **对不上**。冻结照样生效（打分按**文件路径**装载
+   * `<packId>-<version>.json`），但"这个项目绑了哪个 pack"在两个地方给出不同答案，
+   * 而且任何一方改默认值都会让绑定静默失效。**同一件事只能有一个名字。**
+   */
+  it('project_id 默认值三处一致（项目状态 / pack 绑定 / 脚本）', async () => {
+    const stateService = await readFile(join(SRC, 'state/service.ts'), 'utf8')
+    const domainTools = await readFile(join(SRC, 'domain/tools.ts'), 'utf8')
+    const writingTools = await readFile(join(SRC, 'writing/tools.ts'), 'utf8')
+    const freezeScript = await readFile(
+      join(fileURLToPath(new URL('../../..', import.meta.url)), 'scripts/freeze-pack.mjs'),
+      'utf8',
+    )
+
+    const stateDefault = /projectId: config\?\.projectId \?\? '([^']+)'/.exec(stateService)?.[1]
+    const domainDefault = /projectId: config\?\.projectId \?\? '([^']+)'/.exec(domainTools)?.[1]
+    const writingId = /getProjectPackBinding\('([^']+)'\)/.exec(writingTools)?.[1]
+    const scriptId = /optValue\('--project'\) \?\? '([^']+)'/.exec(freezeScript)?.[1]
+
+    expect(stateDefault, '没在 state/service.ts 里找到 projectId 默认值').toBeTruthy()
+    expect(
+      new Set([stateDefault, domainDefault, writingId, scriptId]).size,
+      `project_id 默认值不一致：state=${stateDefault} domain=${domainDefault} writing=${writingId} script=${scriptId}`,
+    ).toBe(1)
+  })
+
+  it('音视频源语料算 benchmark（VoxCeleb2 / LRS2 不被当通用视觉数据集排除）', async () => {    env = await makeEnv()
+    env.kb.saveExtraction({
+      paper_id: '10.1/a',
+      problem_statement: '音视频深伪检测',
+      method_summary: '唇形同步伪造检测',
+      innovations: [],
+      future_work: [],
+      limitations: [],
+      benchmarks: ['VoxCeleb2', 'LRS2', 'FakeAVCeleb'],
+      metrics: ['AUC'],
+      baseline_methods: ['Xception'],
+      extraction_quality: 'full_text',
+      extracted_at: NOW,
+    })
+    env.kb.saveExtraction({
+      paper_id: '10.1/b',
+      problem_statement: '音视频深伪检测',
+      method_summary: '唇形同步伪造检测',
+      innovations: [],
+      future_work: [],
+      limitations: [],
+      benchmarks: ['VoxCeleb2', 'LRS2'],
+      metrics: ['AUC'],
+      baseline_methods: ['Xception'],
+      extraction_quality: 'full_text',
+      extracted_at: NOW,
+    })
+    const result = await env.execute(DOMAIN_TOOLS.bootstrap, {})
+    const draft = JSON.parse(await readFile(String(result.value.draft_path), 'utf8'))
+    const names = draft.benchmarks.benchmarks.map((item) => item.name)
+    expect(names, '音视频方向的源语料是正经 benchmark（FakeAVCeleb 就是从 VoxCeleb2 造的）').toContain('VoxCeleb2')
+    expect(names).toContain('LRS2')
+    // 而通用视觉数据集仍然排除
+    expect(draft.provenance.excluded_non_deepfake_benchmarks.join(' ')).not.toMatch(/VoxCeleb2|LRS2/)
   })
 })
 

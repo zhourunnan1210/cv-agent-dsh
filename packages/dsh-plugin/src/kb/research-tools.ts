@@ -62,6 +62,13 @@ export const ANALYST_PERSONA = [
   '四个库的语义：problems=跨论文的问题；methods=每篇的核心方法；',
   'innovations=可命名的具体机制（模块/损失/数据集/协议）；failures=「某做法在某条件下不成立」。',
   '每条都要给 source_papers（必须来自给你的提取里出现的 paper_id）。只输出结构化结果。',
+  // ext 是**结构化字段**，不是第二段自由描述。2026-09-17 实测：14 条 problems 的
+  // detection_target 全部写成了整句中文描述（"低延迟/边缘部署场景下的 deepfake 检测"…），
+  // 于是 pack 里 7 项的标准词表被撑成 21 项大杂烩——enum 的约束力直接归零
+  // （而且同一个概念出现了 cross-dataset 与 cross_dataset 两种写法）。
+  '⚠️ ext 里的字段是**从词表里挑的短标签**（snake_case），不是句子：',
+  '取值用 domain pack 给定的 enum；没有 pack 时也用短词（如 face_swap、cross_dataset），',
+  '绝不写整句描述。想表达"什么场景/什么条件下"的内容写进 statement 本身，不要塞进 ext。',
 ].join(' ')
 
 function renderJson(_args: unknown, value: unknown) {

@@ -53,7 +53,7 @@ export function resolveDomainToolsConfig(config: Config | undefined): Required<C
     packDir: config?.packDir ?? 'data/packs',
     packId,
     version: config?.version ?? '0.1',
-    projectId: config?.projectId ?? 'cv-research-default',
+    projectId: config?.projectId ?? 'cv-research-project',
     // ext 的包键**缺省等于 pack_id**（勘误 §7.5.2 的命名空间约定）。写死成
     // 某个具体领域名会让"换 pack_id 就派生出空 schema_ext"这种故障悄无声息地发生。
     packNamespace: config?.packNamespace ?? packId,

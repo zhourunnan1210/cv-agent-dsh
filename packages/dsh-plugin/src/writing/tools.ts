@@ -197,7 +197,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       const packLines: string[] = []
       try {
         const packs = kb.listDomainPacks()
-        const binding = kb.getProjectPackBinding('cv-research-default')
+        const binding = kb.getProjectPackBinding('cv-research-project')
         const target = binding === undefined
           ? packs[packs.length - 1]
           : packs.find((pack) => pack.pack_id === binding.pack_id && pack.version === binding.version)

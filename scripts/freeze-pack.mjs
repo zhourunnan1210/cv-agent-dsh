@@ -36,7 +36,7 @@ const bind = args.includes('--bind')
 const reviewer = optValue('--reviewer')
 const packId = optValue('--pack-id') ?? 'deepfake-detection'
 const version = optValue('--version') ?? '0.1'
-const projectId = optValue('--project') ?? 'cv-research-default'
+const projectId = optValue('--project') ?? 'cv-research-project'
 
 const draftPath = optValue('--draft') ?? resolve('data/packs', `${packId}-${version}.draft.json`)
 const frozenPath = resolve('data/packs', `${packId}-${version}.json`)

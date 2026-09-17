@@ -84,7 +84,7 @@ async function makeEnv(options = {}) {
     const packPath = join(dir, 'deepfake-detection-0.1.json')
     await writeFile(packPath, JSON.stringify(FROZEN_PACK))
     kb.registerDomainPack(FROZEN_PACK, packPath)
-    kb.bindProjectPack('cv-research-default', 'deepfake-detection', '0.1')
+    kb.bindProjectPack('cv-research-project', 'deepfake-detection', '0.1')
   }
 
   // 三库条目（写作素材）
