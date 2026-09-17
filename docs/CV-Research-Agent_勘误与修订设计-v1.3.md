@@ -1065,6 +1065,41 @@ embedding 到位后同一套契约自动升级到 `vector` 模式。embedding �
 **下一增量（P3-3b）**：`ideaScore` 服务（preset，读 `kb`）把上面的纯函数接到真实检索上；
 `cvagent_idea_generate`（N 视角 Generator + 合并去重）与 `cvagent_idea_score`（召回 → 边界带外扩 Asta → 委派裁判 → 聚合）；两者各配「假 subagents 提供者」的契约测试（同 `kb-extract` 的做法）。
 
+### 11.8 裁判（Judge）规格：用户提案 + 六条硬约束（2026-09-17）
+
+用户提案：「把我们资料库中的必要信息组装入上下文，分发给一个子代理，由子代理对比这些方法，
+判断是否撞车」——**这正是设计中的裁判形态**。但要让它的结论可用（可复现、可审计、不被单次
+随机性带偏），必须补六条约束：
+
+| # | 约束 | 理由 |
+| --- | --- | --- |
+| 1 | **进上下文的证据由确定性检索决定**，不由裁判决定看什么 | 否则同一条 idea 两次判定的**输入**都不同，结论无法复现 |
+| 2 | 证据包 = 每条候选的 `entry_id` + 陈述 + `ext` 关键字段 + 相似度 + 来源标记（本地/外扩），**top-k**（默认 k=10）；不灌全库 | 全库进上下文会爆炸且稀释判断力；k 与阈值都在 pack 里 |
+| 3 | 输出必须是**逐条判定**：`{ref_id, verdict: collision\|superficial, reason, confidence?}`——不是全局一句"撞车/不撞车" | 分数要按维度（问题/方法/组合）分别算，且要能审计到具体条目 |
+| 4 | **生成者 ≠ 裁判**：独立委派、独立上下文、互不可见对方材料 | 同一个 LLM 既生成又打分必然自评自夸（§11.3 规则 1） |
+| 5 | 允许**一轮**受限追问：裁判可请求某条目的完整陈述或来源论文摘要；第二轮即产出结论，不可无限追问 | 证据片段可能不足以判断，但循环追问会让成本与延迟不可控 |
+| 6 | 高风险候选（总分落在档位边界或 `needs_external` 为真）可**跑两次裁判**，判定分歧则升级为人工 gate | 单次 LLM 判定有随机性；这是"重要决策二次确认"的最低成本形式 |
+
+裁判看到的上下文构造（`cvagent_idea_score` 内部）：
+
+```
+[候选 idea]
+statement / problem / method / innovation / baselines
+
+[证据包：本地检索 top-k]
+P002 (problems, sim=0.31) 跨数据集与跨伪造手法的泛化：…
+M015 (methods,  sim=0.18) CLIP-LN-tuning 检测器：…
+F021 (failures, sim=0.22) SFIAD：计算效率是弱点…
+
+[证据包：外扩检索（仅当 needs_external）]
+Asta: 2345.67890 (sim=?, 标题/摘要) …      ← 标记 external=true
+
+[任务] 对每条证据判定 collision / superficial，给理由；不要给总分（总分由 core 算）
+```
+
+> 打分器侧已就绪：`applyJudgment()` 只接受逐条判定，撞车维度封顶 20 分、表面相似剔除、
+> 可行性采用裁判值且越界回落；`recomputeTotal()` 保证报告可复算（`core/tests/score.test.ts` 19 条）。
+
 ---
 
 ## 12. 需求细化（二）：检索 / 三库 / Idea / 实验四段的现状与设计（2026-09-17）
@@ -1097,7 +1132,24 @@ embedding 到位后同一套契约自动升级到 `vector` 模式。embedding �
 | 与打分的关系 | 复查结论进入 `ScoringReport.evidence`（`source: 'failures'`），并在 `risk_level` 上体现；权重不变 |
 
 **待用户裁定的一点**：Domain Pack 是**现在就冻结 0.1**（不含 failures 段），还是**等失败库 schema 落定后一起冻结进 0.1**？
-（前者可以让打分先跑；后者避免 pack 马上要升 0.2。我的建议：先把失败库 schema 定下来，一起冻结 0.1。）
+→ **2026-09-17 用户裁定：等失败库 schema 定了一起冻进 0.1**（已按此执行，见 §12.6）。
+
+### 12.6 失败方法库已落地（2026-09-17）
+
+| 交付物 | 内容 |
+| --- | --- |
+| 契约 | `StoreName` 增 `failures`；新增 `FailureEntry` 与 `KnowledgeBase.upsertFailure/similarFailures`；`STORE_ID_PREFIX`（P/M/I/**F**）成为唯一前缀来源（原先 dsh 侧各写一份） |
+| 迁移 **v5** | `failures` 同构表 + `failures_fts`（trigram）+ 三个同步触发器。生产库已迁移：`1,2,3,4,5`，索引一致 |
+| 服务/工具 | `TriLibrary.search/summary/counts` 覆盖四库；`cvagent_kb_upsert_entry` 与 `cvagent_kb_search` 的 store 枚举含 `failures`；`cvagent_kb_summary` 输出 `entries_failures` |
+| 种子（来源②） | `scripts/seed-failures.mjs` 从 21 篇提取的 `limitations` 派生 **67 条**（F001–F067），`ext` 带 `failure_mode` / `conditions` / `evidence: paper:<id>`。已装载：库内 **171 条**（P14/M21/I69/F67） |
+| 失败模式分布 | `other` 31 / `data_issue` 15 / `metric_not_improved` 12 / `reproducibility` 3 / `resource_infeasible` 3 / `method_invalid` 3 |
+| 包 | Domain Pack 草案新增 `schema_ext.failures`（4 字段）+ `failure_mode` 规范枚举；并新增 **`DECLARED_FIELDS`** 机制——把「设计上要有、但语料里还没人填」的字段显式补进 pack（`revisit_when`、`related_problem_ids`、`related_method_ids` 就是这样回来的） |
+
+**两处如实记录的局限**：
+
+1. `other` 占 46%：**机械分类只能到这个程度**。失败模式本身是判断（"指标没升"与"方法无效"的界限要看语境），
+   因此种子里的 `other` 应由 Analyst/人工在后续轮次订正，不要假装它已分类完成。
+2. `revisit_when` **全部留空**：该字段要求判断"失败条件是否已变"，机械填充等于编造。留空即"尚无人评估过复现条件"。  
 
 ### 12.3 检索段的补全（对应 (1)）
 

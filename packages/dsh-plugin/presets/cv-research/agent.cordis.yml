@@ -114,6 +114,17 @@
 - id: cvagent-orchestrator-guard
   name: cv-agent-dsh/orchestrator-guard
 
+# ── project conventions (static prompt section) ────────────────────────────
+#
+# 实验归档与组织原则的**常驻入口**（2026-09-17 用户批准，勘误 §12.4）：
+# section 里只放「文档路径 + 三条硬规则 + 校验命令」，长文档留在
+# docs/实验归档与组织原则.md。不提供服务，故不需要 isolate realm。
+#
+# 为什么必须常驻：产物要求是**跨步骤**约束（建目录时要有成功判据、跑完要有
+# metrics.json、收敛要写 RESULTS/EVIDENCE）——等 agent 想起来读文档时通常已经漏了。
+- id: cvagent-instructions
+  name: cv-agent-dsh/instructions
+
 # ── academic retrieval: Asta MCP ────────────────────────────────────────────
 #
 # Asta is Ai2's Scientific Corpus Tool — the Semantic Scholar graph served at

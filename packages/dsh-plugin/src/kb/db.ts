@@ -186,9 +186,45 @@ export const MIGRATIONS: readonly Migration[] = [
       INSERT INTO innovations_fts(innovations_fts) VALUES('rebuild');
     `,
   },
+  {
+    // P3-3c：**失败方法库**（第四库，2026-09-17 用户裁定，勘误 §12.2）。
+    //
+    // 与三库同构（entry_id / statement / ext / source_papers / 时间戳），
+    // 同样配 FTS5 trigram 索引 + 三个同步触发器——理由与 v4 完全一致。
+    // 前缀 `F`；一条失败 = 「某个做法在某个条件下不成立」。
+    //
+    // 用途：idea 生成后的**强制复查闸**（生成 → 复查 → 打分）。命中不直接丢弃，
+    // 而是要求写明「为什么这次不一样」——因为失败条件会变（换数据集/换主干/算力）。
+    version: 5,
+    up: `
+      CREATE TABLE failures (
+        entry_id      TEXT PRIMARY KEY,
+        statement     TEXT NOT NULL,
+        ext           TEXT NOT NULL DEFAULT '{}',
+        source_papers TEXT NOT NULL DEFAULT '[]',
+        created_at    TEXT NOT NULL,
+        updated_at    TEXT NOT NULL
+      );
+
+      CREATE VIRTUAL TABLE failures_fts USING fts5(
+        statement, content='failures', content_rowid='rowid', tokenize='trigram'
+      );
+
+      CREATE TRIGGER failures_fts_ai AFTER INSERT ON failures BEGIN
+        INSERT INTO failures_fts(rowid, statement) VALUES (new.rowid, new.statement);
+      END;
+      CREATE TRIGGER failures_fts_ad AFTER DELETE ON failures BEGIN
+        INSERT INTO failures_fts(failures_fts, rowid, statement) VALUES ('delete', old.rowid, old.statement);
+      END;
+      CREATE TRIGGER failures_fts_au AFTER UPDATE ON failures BEGIN
+        INSERT INTO failures_fts(failures_fts, rowid, statement) VALUES ('delete', old.rowid, old.statement);
+        INSERT INTO failures_fts(rowid, statement) VALUES (new.rowid, new.statement);
+      END;
+    `,
+  },
 ]
 
-/** papers 表与三库的 SQLite 行形态。 */
+/** papers 表与三库+失败库的 SQLite 行形态。 */
 export interface PaperRow {
   paper_id: string
   title: string

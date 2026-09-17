@@ -31,7 +31,7 @@ const fallbackSource = sourceIndex >= 0 && args[sourceIndex + 1] !== undefined
   ? args[sourceIndex + 1]
   : '10.48550/arxiv.2508.20449'
 
-const STORES = new Set(['problems', 'methods', 'innovations'])
+const STORES = new Set(['problems', 'methods', 'innovations', 'failures'])
 const ENUMS = {
   paradigm: new Set(['frequency', 'spatial', 'hybrid', 'clip_foundation', 'reconstruction', 'proactive', 'temporal', 'audio_visual', 'continual', 'ensemble', 'other']),
   training_strategy: new Set(['supervised', 'self_supervised', 'semi_supervised', 'adversarial', 'meta_learning', 'knowledge_distillation', 'other']),
@@ -39,6 +39,8 @@ const ENUMS = {
   innovation_type: new Set(['new_method', 'new_framework', 'new_loss', 'new_dataset', 'new_benchmark', 'new_insight', 'other']),
   modality: new Set(['image', 'video', 'visual', 'audio', 'audio_visual', 'other']),
   detection_target: new Set(['entire_synthesis', 'face_swap', 'face_reenactment', 'attribute_manipulation', 'partial_region', 'audio_speech', 'other']),
+  // 失败库（第四库）
+  failure_mode: new Set(['method_invalid', 'data_issue', 'metric_not_improved', 'resource_infeasible', 'reproducibility', 'other']),
 }
 
 const entries = JSON.parse(await readFile(path, 'utf8'))

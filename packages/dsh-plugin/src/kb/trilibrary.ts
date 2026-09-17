@@ -11,15 +11,12 @@
  * - 否则插入，entry_id 取当前 store 最大数字后缀 + 1（P001/M001/I001）。
  */
 
-import { normalizeTitle, type ExtensionFields, type KbEntry, type StoreName, type UpsertOutcome } from '@cv-research/core'
+import { normalizeTitle, STORE_ID_PREFIX, STORE_NAMES, type ExtensionFields, type KbEntry, type StoreName, type UpsertOutcome } from '@cv-research/core'
 
 import { PaperDatabase } from './db.js'
 
-const ID_PREFIX: Record<StoreName, string> = {
-  problems: 'P',
-  methods: 'M',
-  innovations: 'I',
-}
+/** ID 前缀统一由 core 的 `STORE_ID_PREFIX` 提供（P/M/I/F），避免两处各写一份。 */
+const ID_PREFIX = STORE_ID_PREFIX
 
 interface EntryRow {
   entry_id: string
@@ -148,7 +145,7 @@ export class TriLibrary {
    */
   search(options: SearchOptions = {}): KbEntry[] {
     const stores: readonly StoreName[] = options.store === undefined
-      ? ['problems', 'methods', 'innovations']
+      ? STORE_NAMES
       : [options.store]
     const limit = options.limit === undefined || options.limit <= 0 ? 20 : Math.min(options.limit, 200)
     const query = options.query?.trim() ?? ''
@@ -206,13 +203,14 @@ export class TriLibrary {
         SELECT MAX(updated_at) AS latest FROM (
           SELECT updated_at FROM problems UNION ALL
           SELECT updated_at FROM methods UNION ALL
-          SELECT updated_at FROM innovations
+          SELECT updated_at FROM innovations UNION ALL
+          SELECT updated_at FROM failures
         )
       `)
       .get() as { latest: string | null }
     return {
       counts,
-      total: counts.problems + counts.methods + counts.innovations,
+      total: STORE_NAMES.reduce((sum, store) => sum + counts[store], 0),
       latest_updated_at: latest.latest,
     }
   }
@@ -223,6 +221,7 @@ export class TriLibrary {
       problems: this.count('problems'),
       methods: this.count('methods'),
       innovations: this.count('innovations'),
+      failures: this.count('failures'),
     }
   }
 

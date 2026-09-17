@@ -10,11 +10,26 @@
  * `face_swap`、`FF++` 之类的领域字面量（v1.2 原则六）。
  */
 
-/** 三库的库名。 */
-export type StoreName = 'problems' | 'methods' | 'innovations'
+/**
+ * 知识库的库名。
+ *
+ * 前三库是 v1.2 §5.4 冻结的 problems / methods / innovations；
+ * **`failures`（失败方法库）是 2026-09-17 用户追加的第四库**（勘误 §12.2）：
+ * 一条失败 = 「某个做法在某个条件下不成立」，用于 idea 生成后的强制复查闸
+ * ——命中不直接丢弃，而是要求写明「为什么这次不一样」（`revisit_when` 对照）。
+ */
+export type StoreName = 'problems' | 'methods' | 'innovations' | 'failures'
 
 /** 所有库名，供遍历与校验使用。 */
-export const STORE_NAMES = ['problems', 'methods', 'innovations'] as const satisfies readonly StoreName[]
+export const STORE_NAMES = ['problems', 'methods', 'innovations', 'failures'] as const satisfies readonly StoreName[]
+
+/** 三库 + 失败库的 ID 前缀（`P`/`M`/`I`/`F`）。 */
+export const STORE_ID_PREFIX: Readonly<Record<StoreName, string>> = {
+  problems: 'P',
+  methods: 'M',
+  innovations: 'I',
+  failures: 'F',
+}
 
 /**
  * 领域扩展字段的载荷。
@@ -62,8 +77,21 @@ export interface InnovationEntry extends BaseEntry {
   readonly store: 'innovations'
 }
 
+/**
+ * 失败方法库条目（2026-09-17 追加的第四库）。
+ *
+ * `statement` 写「做法 → 失败表现」，例：
+ * *「在 FF++ c23 上只做频域分支替换主干：跨库 AUC 不升反降（DFDC −1.8）」*。
+ *
+ * 领域细节（`failure_mode` / `conditions` / `revisit_when` 等）走 `ext`，
+ * 与三库同一套 Domain Pack 机制——本文件不得出现领域字面量。
+ */
+export interface FailureEntry extends BaseEntry {
+  readonly store: 'failures'
+}
+
 /** 任一条目。 */
-export type KbEntry = ProblemEntry | MethodEntry | InnovationEntry
+export type KbEntry = ProblemEntry | MethodEntry | InnovationEntry | FailureEntry
 
 /** 带相似度的检索命中。 */
 export interface ScoredEntry<TEntry extends KbEntry = KbEntry> {
@@ -92,6 +120,8 @@ export interface KbSummary {
   readonly problems: readonly ProblemEntry[]
   readonly methods: readonly MethodEntry[]
   readonly innovations: readonly InnovationEntry[]
+  /** 失败库摘要（idea 复查闸的输入）。 */
+  readonly failures: readonly FailureEntry[]
 }
 
 /**
@@ -103,9 +133,12 @@ export interface KnowledgeBase {
   upsertProblem(entry: ProblemEntry): Promise<UpsertOutcome>
   upsertMethod(entry: MethodEntry): Promise<UpsertOutcome>
   upsertInnovation(entry: InnovationEntry): Promise<UpsertOutcome>
+  upsertFailure(entry: FailureEntry): Promise<UpsertOutcome>
   /** 向量检索；向量不可用时降级为关键词匹配并如实标记 `mode`。 */
   similarProblems(query: string, k: number): Promise<RetrievalResult<ProblemEntry>>
   similarMethods(query: string, k: number): Promise<RetrievalResult<MethodEntry>>
+  /** 失败库检索：idea 复查闸用（按"做法 + 条件"召回已有失败）。 */
+  similarFailures(query: string, k: number): Promise<RetrievalResult<FailureEntry>>
   /** 三库摘要，供 Idea 生成。 */
   summarize(limit: number): Promise<KbSummary>
 }

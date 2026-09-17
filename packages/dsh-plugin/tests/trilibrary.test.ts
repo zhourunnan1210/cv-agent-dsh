@@ -30,7 +30,42 @@ describe('TriLibrary（§7.5.2 三库同构表）', () => {
     expect(tri.upsert('problems', '问题一', ['p1'], {}).entry_id).toBe('P001')
     expect(tri.upsert('methods', '方法一', ['p1'], {}).entry_id).toBe('M001')
     expect(tri.upsert('innovations', '创新一', ['p1'], {}).entry_id).toBe('I001')
-    expect(tri.counts()).toEqual({ problems: 1, methods: 1, innovations: 1 })
+    expect(tri.counts()).toEqual({ problems: 1, methods: 1, innovations: 1, failures: 0 })
+  })
+
+  // ── 失败方法库（第四库，2026-09-17 用户裁定，勘误 §12.2）──────────────────
+  describe('failures 失败方法库', () => {
+    it('ID 用 F 前缀，与三库各自独立编号', () => {
+      expect(tri.upsert('failures', '在 FF++ c23 上只换频域分支：跨库 AUC 不升反降', ['10.1/a'], {}).entry_id).toBe('F001')
+      expect(tri.upsert('failures', '第二条失败', ['10.1/b'], {}).entry_id).toBe('F002')
+      expect(tri.counts().failures).toBe(2)
+      expect(tri.get('failures', 'F001')?.store).toBe('failures')
+    })
+
+    it('同样遵守 statement 归一化合并语义（失败库不是日志，是去重知识库）', () => {
+      tri.upsert('failures', 'Cross-Dataset Fine-Tuning Fails', ['10.1/a'], {})
+      const outcome = tri.upsert('failures', 'cross dataset fine tuning fails', ['10.1/b'], {})
+      expect(outcome.merged).toBe(true)
+      expect(outcome.entry_id).toBe('F001')
+      expect(tri.get('failures', 'F001')?.source_papers).toEqual(['10.1/a', '10.1/b'])
+    })
+
+    it('可被检索（FTS5 trigram），且不会跟三库互相污染', () => {
+      tri.upsert('failures', 'DIFFusion 分支在 DFDC 上不升反降', ['10.1/a'], {})
+      tri.upsert('methods', 'DIFFusion 分支融合主干', ['10.1/a'], {})
+      const failuresOnly = tri.search({ store: 'failures', query: 'DIFFusion' })
+      expect(failuresOnly.map((entry) => entry.entry_id)).toEqual(['F001'])
+      const allStores = tri.search({ query: 'DIFFusion' })
+      expect(allStores.map((entry) => entry.entry_id).sort()).toEqual(['F001', 'M001'])
+    })
+
+    it('summary 计入失败库（总数 = 四库之和）', () => {
+      tri.upsert('problems', '一', ['p'], {})
+      tri.upsert('failures', '二', ['p'], {})
+      const summary = tri.summary()
+      expect(summary.counts).toEqual({ problems: 1, methods: 0, innovations: 0, failures: 1 })
+      expect(summary.total).toBe(2)
+    })
   })
 
   it('同库 statement 归一化相等 → 合并：保留较长 statement、union 来源', () => {
@@ -53,7 +88,7 @@ describe('TriLibrary（§7.5.2 三库同构表）', () => {
   it('跨库独立：同一 statement 在 problems 与 methods 各自成行', () => {
     tri.upsert('problems', '同一句话', ['p1'], {})
     tri.upsert('methods', '同一句话', ['p1'], {})
-    expect(tri.counts()).toEqual({ problems: 1, methods: 1, innovations: 0 })
+    expect(tri.counts()).toEqual({ problems: 1, methods: 1, innovations: 0, failures: 0 })
     expect(tri.get('methods', 'M001')?.store).toBe('methods')
   })
 
@@ -131,7 +166,7 @@ describe('TriLibrary（§7.5.2 三库同构表）', () => {
 
     it('summary 给出各库计数、总数与最近更新时间', () => {
       const summary = tri.summary()
-      expect(summary.counts).toEqual({ problems: 2, methods: 1, innovations: 2 })
+      expect(summary.counts).toEqual({ problems: 2, methods: 1, innovations: 2, failures: 0 })
       expect(summary.total).toBe(5)
       expect(summary.latest_updated_at).toMatch(/^\d{4}-\d{2}-\d{2}T/)
     })

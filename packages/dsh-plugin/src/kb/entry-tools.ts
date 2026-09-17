@@ -23,7 +23,7 @@ import type { KbService } from './service.js'
 export const name = 'cvagent-kb-entries'
 export const inject = ['kb', 'tools']
 
-const STORE_ENUM = ['problems', 'methods', 'innovations'] as const
+const STORE_ENUM = ['problems', 'methods', 'innovations', 'failures'] as const
 
 function renderJson(_args: unknown, value: unknown) {
   return [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }]
@@ -38,10 +38,11 @@ export function apply(ctx: Context): void {
   toolsRuntime.register(defineTool({
     name: KB_TOOLS.upsertEntry,
     description:
-      '写入一条三库条目（problems / methods / innovations）。按 §7.5.2 合并规则：'
-      + '同库内 statement 归一化（去全部非字母数字后小写）相等则**合并**——保留较长陈述、'
-      + 'source_papers 取并集、ext 按 pack 逐键浅合并；否则新建条目并分配 ID（P/M/I + 三位序号）。'
-      + 'entries 必须可溯源：source_papers 里的 paper_id 应当真实存在于论文库。',
+      '写入一条知识库条目（problems / methods / innovations / **failures 失败方法库**）。'
+      + '按 §7.5.2 合并规则：同库内 statement 归一化（去全部非字母数字后小写）相等则**合并**——'
+      + '保留较长陈述、source_papers 取并集、ext 按 pack 逐键浅合并；否则新建条目并分配 ID（P/M/I/F + 三位序号）。'
+      + '条目必须可溯源：source_papers 里的 paper_id 应当真实存在于论文库。'
+      + '失败库条目的 statement 写「做法 → 失败表现」，ext 带 failure_mode / conditions / revisit_when。',
     parameters: {
       store: { type: 'string', required: true, enum: [...STORE_ENUM], description: '目标库' },
       statement: { type: 'string', required: true, description: '条目陈述（中文描述 + 英文专有名词保留原文）' },
@@ -176,6 +177,7 @@ export function apply(ctx: Context): void {
           entries_problems: { type: 'integer', required: true },
           entries_methods: { type: 'integer', required: true },
           entries_innovations: { type: 'integer', required: true },
+          entries_failures: { type: 'integer', required: true, description: '失败方法库条目数' },
           entries_total: { type: 'integer', required: true },
           latest_entry_update: { type: 'string', description: '三库最近一次更新时间；无条目时为空串' },
         },
@@ -191,6 +193,7 @@ export function apply(ctx: Context): void {
         entries_problems: summary.counts.problems,
         entries_methods: summary.counts.methods,
         entries_innovations: summary.counts.innovations,
+        entries_failures: summary.counts.failures,
         entries_total: summary.total,
         latest_entry_update: summary.latest_updated_at ?? '',
       }

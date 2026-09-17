@@ -45,7 +45,7 @@ describe('PaperDatabase 迁移框架', () => {
     // 断言与冻结清单**同源**（而不是硬编码 [1,2,3]）：迁移纪律是「只追加新版本」，
     // 追加 v4/v5… 时这条测试应当自动跟随，而不是变成需要手改的绊脚石
     expect(db.appliedMigrations()).toEqual(MIGRATIONS.map((migration) => migration.version))
-    expect(db.appliedMigrations()).toEqual([1, 2, 3, 4])
+    expect(db.appliedMigrations()).toEqual([1, 2, 3, 4, 5])
     db.close()
   })
 
@@ -73,15 +73,15 @@ describe('PaperDatabase 迁移框架', () => {
     for (const expected of ['idx_papers_doi', 'idx_papers_arxiv', 'idx_papers_pmid', 'idx_papers_title', 'idx_papers_year']) {
       expect(indexes).toContain(expected)
     }
-    // v4：三库 FTS5 影子表（`type='table'`）+ 每库三个同步触发器
-    for (const expected of ['problems_fts', 'methods_fts', 'innovations_fts']) {
+    // v4：三库 FTS5 影子表（`type='table'`）+ 每库三个同步触发器；v5：失败库同样一套
+    for (const expected of ['problems_fts', 'methods_fts', 'innovations_fts', 'failures', 'failures_fts']) {
       expect(tables).toContain(expected)
     }
     const triggers = db.raw
       .prepare("SELECT name FROM sqlite_master WHERE type='trigger'")
       .all()
       .map((row) => (row as { name: string }).name)
-    for (const store of ['problems', 'methods', 'innovations']) {
+    for (const store of ['problems', 'methods', 'innovations', 'failures']) {
       for (const suffix of ['ai', 'ad', 'au']) {
         expect(triggers).toContain(`${store}_fts_${suffix}`)
       }

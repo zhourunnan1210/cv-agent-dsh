@@ -32,7 +32,7 @@ const VERSION = '0.1'
 const db = new PaperDatabase('data/papers/metadata.db')
 
 // ── 1. schema_ext：从真实 ext 用法反推字段与枚举 ───────────────────────────
-const STORES = ['problems', 'methods', 'innovations']
+const STORES = ['problems', 'methods', 'innovations', 'failures']
 /** 与三库关系字段同名的字段不进 schema_ext（它们是**条目间引用**，不是领域扩展）。 */
 const RELATION_FIELDS = new Set(['related_problem_ids', 'related_method_ids'])
 /**
@@ -48,6 +48,8 @@ const STANDARD_ENUM_VALUES = {
   training_strategy: ['supervised', 'self_supervised', 'semi_supervised', 'adversarial', 'meta_learning', 'knowledge_distillation', 'other'],
   generalization_target: ['in_dataset', 'cross_dataset', 'cross_manipulation', 'cross_model', 'none'],
   innovation_type: ['new_method', 'new_framework', 'new_loss', 'new_dataset', 'new_benchmark', 'new_insight', 'other'],
+  // 失败库（第四库）：失败模式是**规范枚举**，不许自由发挥
+  failure_mode: ['method_invalid', 'data_issue', 'metric_not_improved', 'resource_infeasible', 'reproducibility', 'other'],
 }
 const extInventory = {}
 for (const store of STORES) {
@@ -65,10 +67,29 @@ for (const store of STORES) {
   extInventory[store] = fieldValues
 }
 
+/**
+ * **显式声明**的扩展字段：语料里可能还没人填，但 pack 必须允许（甚至鼓励）填写。
+ *
+ * 教训（§12.2 的同一类）：只按"实测出现过"生成 schema_ext，会把设计上必需的字段
+ * 漏掉——`revisit_when` 就是这样消失的（67 条种子里全部留空，因为它需要判断，
+ * 不该机械填充）。所以「设计上要有」的字段在这里显式补，并在 hint 里写清用途。
+ */
+const DECLARED_FIELDS = {
+  innovations: {
+    related_problem_ids: { type: 'text', extraction_hint: '字符串数组：该创新针对的 problems 条目 ID（如 ["P002"]）。入库后由 scripts/link-entry-ids.mjs 按 source_papers 交集机械回填。' },
+    related_method_ids: { type: 'text', extraction_hint: '字符串数组：该创新所属的 methods 条目 ID（如 ["M015"]）。同上。' },
+  },
+  failures: {
+    revisit_when: { type: 'text', extraction_hint: '什么条件下值得再试这条失败做法（例如"主干换成预训练 ViT 后"）。**这是判断字段，不要机械填充**；留空表示"尚无人评估过复现条件"。' },
+  },
+}
+
 const schemaExt = {}
 for (const store of STORES) {
   const fields = {}
+  for (const [field, spec] of Object.entries(DECLARED_FIELDS[store] ?? {})) fields[field] = spec
   for (const [field, values] of extInventory[store]) {
+    if (fields[field] !== undefined) continue
     const flat = values.flatMap((value) => (Array.isArray(value) ? value : [value]))
     const distinct = [...new Set(flat.filter((value) => typeof value === 'string'))]
     const allStrings = flat.every((value) => typeof value === 'string')
