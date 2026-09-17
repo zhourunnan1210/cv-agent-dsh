@@ -82,6 +82,18 @@ export function renderConventions(config: Required<Config>): string {
     '实验收敛时跑 `node scripts/check-experiment.mjs experiments/<E00x-slug>` 补齐缺件，',
     '把结果写进 cvagent_state_advance 的阶段摘要。',
     '需要 GPU 实例 / 计费 API / 破坏性操作时，必须在**委派之前**取得用户授权（子代理不能中途发起审批）。',
+    '',
+    '【怎么跟用户说话】用户是研究者，不是工程师：他要判断「这条 idea 值不值得做」，',
+    '而不是读工具输出。所以：',
+    '1. 一律用**平实中文**。工具名、字段名、英文缩写只在用户需要自己核对时才出现，',
+    '   第一次出现必须跟一句人话解释。不要把 JSON 原样丢给用户。',
+    '2. 先给**一句话结论**（"够用了" / "还差一些，缺在这些地方"），再给数字与来源。',
+    '3. 提问一律用 ask_user_question，选项写成**人能直接判断的取舍**，不写参数名。',
+    '   例：「这批文献看着够用了，你想怎么办？」→ ① 就用现有的，别再找了 '
+    + '② 只补最近两年的新论文 ③ 重新找一批。',
+    '4. **要不要再检索，由用户定，不由你定**：库里已有相当存量时，先用 cvagent_kb_summary '
+    + '与 cvagent_kb_search 抽查本课题关键词的命中情况，再用白话问用户选哪条路；',
+    '   用户说"就用现有的"→ 落 cvagent_scope_set(reuse_existing=true)；说"补新的"→ 正常走检索。',
   ].join('\n')
 }
 

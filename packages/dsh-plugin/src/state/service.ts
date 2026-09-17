@@ -198,13 +198,15 @@ export class ProjectStateService extends Service {
    * 存量快照，此后知识阶段的判据只认本课题新增——语料沿用，但门控不被历史存量顶过。
    * 快照是惰性求值的：范围没变就不查库。
    */
-  async setScope(scope: { sub_domain?: string | null; keywords?: readonly string[] }): Promise<ProjectState> {
+  async setScope(scope: { sub_domain?: string | null; keywords?: readonly string[]; reuse_existing?: boolean }): Promise<ProjectState> {
     const state = await this.getOrCreateState()
     const next = setResearchScope(
       state,
-      scope,
+      { ...(scope.sub_domain === undefined ? {} : { sub_domain: scope.sub_domain }), ...(scope.keywords === undefined ? {} : { keywords: scope.keywords }) },
       new Date().toISOString(),
       () => this.snapshotCounts(),
+      // 用户裁定"沿用存量"时落成 reuse（判据回到绝对口径）；未传则保持原值。
+      scope.reuse_existing === undefined ? undefined : (scope.reuse_existing ? 'reuse' : 'extend'),
     )
     await this.save(next)
     return next

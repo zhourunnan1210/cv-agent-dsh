@@ -1,183 +1,196 @@
 # Phase 3 真实会话操作指引（知识段 → idea 段）
 
-> 用途：在**真实会话**里跑通 cv-research 的完整链路，并让每一步的产物可核对。
-> 这份指引是给"人"看的操作手册——每步给出**可直接复制的提示词**、**预期结果**、
-> **常见故障与判读**。设计与实现依据见 `CV-Research-Agent_勘误与修订设计-v1.3.md`。
+> **这份文档怎么用**：每一节有一段**可以直接复制给 agent 的话**，都是普通话，
+> 不用背术语——照着念就行。下面「看什么」告诉你结果对不对，「不对劲怎么办」给判读。
+> 括号里的英文/工具名是给你**偶尔想核对**时用的，不必念给 agent 听。
+>
+> 设计与实现依据见 `CV-Research-Agent_勘误与修订设计-v1.3.md`。
 
-## 0. 前置（每次重启宿主后做一次）
+---
+
+## 0. 每次重启电脑/宿主后，先跑这一条
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start-dsh-web.ps1 -DryRun   # 自检
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start-dsh-web.ps1 -DryRun
 ```
 
-要看到：`ASTA_API_KEY 已设置`、`代理端口 在监听`、`连接 Asta 预检 通过`、两个 skill 根都存在。
+看到「全部就绪」再正式启动（双击桌面「启动 CV-Research」，或把上面的 `-DryRun` 去掉）。
 
-启动宿主（双击桌面「启动 CV-Research」或跑上面的命令去掉 `-DryRun`），然后：
-**新开一个会话 → 选 `CV Research Orchestrator`**。
+然后**新开一个会话 → 选 CV Research Orchestrator**。
 
-工具目录自检（可选，但建议）：
-```bash
-node scripts/check-tool-catalog.mjs --with-asta   # 期望：cvagent 21 个 + Asta 8 个
-```
-
-> ⚠️ 别用裸 `dsh web` 启动：它不注入前置，而缺失的后果是**静默的**（检索工具消失、skill 根失效）。
+> ⚠️ 别直接敲 `dsh web`：它不带检索密钥和代理设置，后果是**静默的**——检索工具会凭空消失。
 
 ---
 
-## 1. 定范围（`cvagent_scope_set`）
+## 1. 开题：定范围 + 定"要不要再找文献"
 
-先让 Orchestrator 与你确认细分领域，再落盘。**可以直接把下面整段发给它**：
+**直接把下面这段发给 agent**：
 
 ```
-我要开始一个新课题。请先问我 2–3 个问题把研究范围收敛清楚（细分领域、要解决的问题、
-必须覆盖/排除的模态或数据集），然后调用 cvagent_scope_set 把结论落盘：
-sub_domain 写一句话，keywords 写 3–8 个（中英兼顾、含同义表述）。
-落盘后把 cvagent_state_get 的结果念给我看一遍，确认 sub_domain 与 keywords 都对了。
-先不要检索。
+我要开一个新课题，先把方向定下来，然后我们商量文献怎么办。
+
+先问我两三个问题，把方向问清楚：具体做什么、要解决什么问题、哪些模态或数据集必须覆盖、
+哪些明确不做。问完把结论复述给我确认。
+
+确认之后做两件事：
+1) 把我这个课题的方向和关键词存下来（关键词给我看一眼，中英文都放，5 到 8 个）；
+2) 顺便告诉我库里现在有多少文献、其中大概多少跟这个课题沾边——用普通话讲，
+   别贴原始数据。然后问我：是就用现有的这批、还是只补最近两年的新的、还是重新找一批。
+   我说了算，你别替我决定。
 ```
 
-**预期**：`scope_ready: true`，`keywords` 5–8 条。
-**为什么必须先做**：知识阶段的判据里，`sub_domain` 未确定则**一律不放行**（这是刻意的——
-检索范围没定就谈"知识建成"没有意义）。
+**看什么**：它会先问你问题，然后把方向和关键词复述一遍；再给你一句大白话的存量判断
+（例如"库里 390 篇，粗看大约有六七十篇是这个方向的"），最后**问你选哪条路**。
 
-> ⚠️ **顺序很重要**：落盘范围的那一刻会记下**口径基线**（当时的存量快照）——见
-> 勘误 §12.11 的方案 C。库里已有的语料**不会**帮你过门控，门控只认"落盘之后新增"。
-> 所以**先落范围、再检索入库**；反过来做（先攒语料后落范围）会让基线等于语料本身，
-> `advance` 会一直报 `论文库新增 0/100 篇（存量 390，基线 390）`。
-> 这不是故障，是刻意语义；真要重新计时，就再调一次 `cvagent_scope_set`（**改一个关键词**
-> 即可触发重新记基线）。
+**它问你的时候，你只要回答一句话**：
+
+- 「就用现有的，别再找了」→ 它会把口径改成"沿用存量"，知识阶段直接算过（不再要求新论文）
+- 「只补最近两年的」/「重新找一批」→ 正常走第 2 步检索
+
+> ⚠️ **顺序很重要**：你说"要补新的"之后，计时就从这一刻开始——**落盘之前库里已有的不算数**。
+> 所以正确顺序是：先定方向 → 再检索。反过来做，它算进度时会一直告诉你"新增 0 篇"。
+> 这不是坏了，是刻意的：不然上一个课题的存货会假装成本课题的成果。
+> 想重新计时，改一个关键词再说一次方向就行。
 
 ---
 
-## 2. 检索入库（`cvagent_kb_scout` → `cvagent_kb_import_papers`）
+## 2. 找文献、入库（如果第 1 步选了"补新的"）
 
 ```
-现在做检索。用 cvagent_kb_scout 取回候选（max_results=60，
-extra_instructions 里写明"优先近三年、必须带 DOI 或 arXiv ID"）。
-拿到结果后：
-1) 先把 count 与 with_external_id 报给我；
-2) 直接把我确认要的那批用 cvagent_kb_import_papers 入库（source_channel=asta），
-   并把 inserted / merged / needs_review / failed 四个数报给我；
-3) 然后调 cvagent_kb_summary，把论文库与已解析/已提取的数字报给我。
+按刚才定的方向找一批新的。要 60 篇左右，优先近三年、必须有 DOI 或 arXiv 编号。
+找到之后先告诉我找到多少、其中多少条能用（有编号的才算能用），我确认要哪些，再入库。
+入库完告诉我：新进来了多少、本来就有多少、有多少条需要我自己看一眼。
 ```
 
-**预期**：`with_external_id` ≈ count（无外部 ID 的候选被工具自动剔除，不入 `import_json`）；
-入库后 `papers` 明显增长。
-**判读**：
-- `count` 很小（<10）→ 检索词太窄，回到第 1 步加关键词；
-- `with_external_id` 远小于 `count` → 说明 Scout 返回了很多没有 ID 的条目（工具会丢掉它们，
-  这是对的：标题无法唯一标识，去重会错）；
-- 入库全是 `merged` → 说明这批论文库里已经有了（换个角度或看下一句）。
+**看什么**：它报三个数——找到、能用、入库（新增/已有/待复核）。
+
+**不对劲怎么办**：
+- 找到的很少（不到 10 条）→ 关键词太窄，回第 1 步再加两个说法；
+- "能用"的远少于"找到的"→ 正常，没编号的会被自动丢掉（标题不唯一，留着反而会把去重搞乱）；
+- 入库全是"本来就有"→ 这批库里已经收过了，说明覆盖面确实够，可以考虑第 1 步的第①条路。
 
 ---
 
-## 3. 解析（MinerU，脚本侧，不在会话里）
-
-会话不负责解析——解析是**落盘流水线**，跑脚本（额度 2000 页/天）：
+## 3. 下载全文并解析（这一步是跑脚本，不在会话里）
 
 ```bash
-node scripts/batch-parse.mjs --dry-run     # 先看计划与额度预算
-node scripts/batch-parse.mjs               # 正式跑（可中断，用 --resume 续）
-node scripts/check-md-paths.mjs            # 完整性：md_path 是否都能读
+node scripts/batch-parse.mjs --dry-run     # 先看要花多少额度（每天 2000 页）
+node scripts/batch-parse.mjs               # 正式跑；中途断了用 --resume 接着跑
 ```
 
-> 中断/代理掉线都不要紧：`--resume` 只轮询+落库，**不重复提交、不重复计费**；
-> MinerU 侧已 done 但本地没落库时用 `--resume-batch <batch_id>` 定向补收。
+断了、代理掉线都不要紧：`--resume` 只补没做完的，**不会重复下载、不会重复计费**。
 
 ---
 
-## 4. 结构化提取（`cvagent_kb_extract`，每篇一次委派）
+## 4. 让每篇论文变成结构化笔记
 
 ```
-对论文库里"已解析但还没提取"的论文做结构化提取，一次 5 篇、串行做。
-每篇调用 cvagent_kb_extract(paper_id=...)，把返回的 extraction_quality 与一句话摘要报给我，
-失败的记下 paper_id 与原因，不要重试超过一次。
-做完后调 cvagent_kb_summary 报已提取篇数。
+把"已经拿到全文、但还没做笔记"的论文挑出来，一次做 5 篇，一篇一篇来。
+每篇做完告诉我：笔记质量如何、一句话讲它做了什么。做不成的记下是哪篇、为什么，
+同一篇最多重试一次。
+做完告诉我现在总共做完了多少篇。
 ```
 
-**预期**：`extractions` 增长；每篇返回结构化三字段。
-**判读**：报"论文尚未解析" → 该篇 `md_path` 为空，回第 3 步；报"未按契约应答" →
-子代理没按 outputSchema 回（可重试一次；连续出现说明该篇 Markdown 有问题，先跳过）。
+**看什么**：篇数在涨，每篇有一句话摘要。
+**不对劲怎么办**：报"还没有全文"→ 这篇没解析成功，回第 3 步；
+报"没按格式回"→ 子代理没按要求输出，重试一次；连着出现就跳过这篇，说明它的全文有问题。
 
 ---
 
-## 5. 归纳成库条目（`cvagent_kb_analyze`）
+## 5. 归纳进知识库
 
 ```
-现在做归纳。用 cvagent_kb_analyze 处理上一步提取过的论文（一次 5 篇）。
-先 dry_run=true 跑一次，把 proposed / skipped 与小节标题清单报给我，我确认后再正式写库。
-正式写库时把 created / merged 报给我，并列出被合并（merged=true）的条目 ID——
-那些是"与既有条目撞车"的信号，我想看看是真正的重复还是表述不同。
+把上一步做完笔记的论文归纳成知识条目，一次 5 篇。
+先试跑一遍（不写库），把打算写什么、跳过了什么告诉我，我确认了再正式写。
+正式写的时候告诉我新增多少、合并了多少；合并的那些把编号列出来——我想看看是真重复，
+还是只是说法不一样。
 ```
 
-**预期**：`dry_run` 的 `proposed` 合理（每篇 2–5 条）；正式写库后四库计数增长，`merged` 少量。
-**判读**：`skipped` 多 → Analyst 产出的形状不合规（缺 `source_papers` 或库名非法），
-看 `skipped` 数是否 >proposed 的 30%；`merged` 很多 → 说明库里已覆盖这个话题。
+**看什么**：每篇一般出 2–5 条；正式写完后四类条目都在涨，"合并"的很少（几条）。
+**不对劲怎么办**：跳过的一大堆 → 子代理产出不合规（比如没写来源论文），
+看看跳过的比例是不是超过三分之一；合并特别多 → 说明库里已经把这个话题覆盖得比较满了。
 
 ---
 
-## 6. 阶段门控（`cvagent_state_advance`）
+## 6. 结算知识阶段
 
 ```
-请调 cvagent_state_advance，把本次知识构建的摘要写进去
-（含论文库总数、已解析、已提取、四库条目数），
-然后逐条念 missing 清单与 facts_json，不要替我判断"差不多够了"。
-如果达标，按当前模式走门控：A 模式下先用 ask_user_question 问我，再 cvagent_gate_resolve。
+盘点一下这次知识构建的结果，然后申请进入下一阶段。
+把缺什么、还差多少用普通话告诉我，别替我判断"差不多够了"。
+如果够格了，按当前模式问我一声再推进。
 ```
 
-**预期**：达标 → `gate_requested: true`；不达标 → `missing` 里是**具体数字**（如 `论文库 12/100 篇`），
-照单补齐即可（`facts_json` 就是判据依据，可核对）。
+**看什么**：够格 → 它会来问你；不够格 → 它给你一张"还缺什么"的清单，都是具体数字。
+
+> 如果你在第 1 步选了"就用现有的"，这里会直接算过——那是你的决定，不是它偷懒。
 
 ---
 
-## 7. 冻结 Domain Pack（`cvagent_domain_bootstrap` → `cvagent_domain_freeze`）
+## 7. 冻结领域包（这一步需要你签字）
 
 ```
-现在冻结领域包：
-1) cvagent_domain_bootstrap 派生草案，把 summary_json（各库字段、benchmark/术语数、权重与阈值）
-   和 contract_problems 报给我；
-2) 我要看三处：enum 词表、benchmarks 纳入/排除清单、权重与档位——把这三项完整念给我；
-3) 我确认后，用 cvagent_domain_freeze(reviewer="<我的标识>", bind=true) 冻结。
+现在把领域包定下来。
+1) 先根据库里的实际情况生成一份草案，告诉我里面有什么（各类字段、基准数据集、术语数量、
+   评分权重和档位）；
+2) 我要重点看三样东西：术语表、基准数据集的取舍、评分权重与档位——这三样完整念给我；
+3) 我确认之后，用我的签名冻结，并绑到当前项目上。
 ```
 
-**判读**：`contract_problems` 非空 → **不许冻结**（工具会拒），按提示修；
-冻结成功会回 `content_hash`（审计用）。
-> 冻结是**人工评审门**：签名空着会被 core 直接拒（v1.2 §3.4.4 不可豁免）。
-> 之后要改 pack，走 `cvagent_domain_propose_revision` 升版本——旧绑定不受影响。
+**看什么**：三样东西都念全了；冻结成功会返回一个校验码（留着备查）。
+**不对劲怎么办**：它说"不满足契约"→ **不许强行冻结**，按提示改；
+不给你看那三样就想冻 → 直接拒。
+
+> 冻结是**人工关卡**：签名不给会被系统直接拒（不可豁免）。
+> 以后要改，走"提修订、升版本"，不会影响已经绑定的旧版本。
 
 ---
 
-## 8. idea 生成与打分（`cvagent_idea_generate` → `cvagent_idea_score`）
+## 8. 生成 idea 并打分
 
 ```
 现在做 idea 段。
-1) 用 cvagent_idea_generate（max_lenses=3、ideas_per_lens=2）生成候选，
-   把 per_lens 的状态（ok/duplicate/empty/error）与候选清单报给我；
-2) 我挑 2 条，你逐条调 cvagent_idea_score；
-3) 如果返回 status=needs_external_evidence，就用 mcp__asta__snippet_search 补外部证据
-   （把结果整理成 [{"ref_id","statement","similarity"}] 传回 external_evidence 再调一次）；
-4) 最后把两条的打分报告并排报给我：total / 四维分 / suggestion / risk_level /
-   failure_blocked_by / failure_waivers / report_consistent。
+1) 生成候选（3 个视角、每个 2 条），把每个视角的结果和候选清单告诉我；
+2) 我挑 2 条，你逐条打分；
+3) 如果它说"需要外部证据"，就去查一下外部文献补上，再打一次；
+4) 最后把两条的评分并排给我：总分、四个维度、建议（做/改/放弃）、风险等级、
+   有没有撞上失败先例、以及报告自不自洽。
 ```
 
-**预期**：报告自洽（`report_consistent: true`）；`evidence` 里能看到逐条撞车判定（含失败的先例）。
-**判读**：
-- `pack_frozen: false` → 第 7 步没做，权重是草案值（报告里会带告警）；
-- `failure_blocked_by` 非空 → 命中失败方法库且裁判认为条件仍成立：这条 idea 应先改设计；
-- `failure_waivers` 非空 → 裁判认为失败条件已变（理由要能说服你）；
-- 全部 `suggestion: abandon/revise` → 说明该视角已被做透（这本身是有价值的结论）。
+**看什么**：四维分数、建议、风险等级；证据里能看到逐条"撞车"判定（包括以前失败过的做法）。
+**不对劲怎么办**：
+- 它说权重是草案值 → 第 7 步没做，先回去冻结领域包；
+- "撞上失败先例"非空 → 这条 idea 先改设计，别急着做；
+- 两条都被建议"放弃/改写" → 这也是有价值的结论：这个视角已经被做透了。
 
 ---
 
-## 9. 常见故障速查
+## 9. 出问题时先看这里
 
-| 现象 | 可能原因 | 处理 |
+| 现象 | 多半是什么 | 怎么办 |
 | --- | --- | --- |
-| cv-research 会话里一个 `cvagent_*` 都没有 | preset 挂载失败（一行坏掉全份挂载失败，E19/E30） | ① `node scripts/check-preset.mjs` 看结构；② `node scripts/probe-preset-rows.mjs` 在新进程里逐行试挂（**能给出与宿主逐字相同的报错**，如 `cannot get property "systemPrompt" without inject`）；③ 看宿主窗口的报错 |
-| `advance` 报「论文库**新增** 0/100（存量 390，基线 390）」 | **不是故障**：口径基线在起作用（方案 C），存量不算数 | 想让新语料计入，先 `cvagent_scope_set` 落下本课题范围再检索；或改一个关键词重新记基线 |
-| Scout 报 `Cannot read properties of undefined (reading 'aborted')` | 委派请求漏传必填的 `signal`（E31） | 已修；若复现请连同 `node packages/dsh-plugin/tests/names.test.mjs` 一起回报——`tests/subagent-contract.test.ts` 会守住调用点 |
-| 有 `cvagent_*` 但没有 `mcp__asta__*` | 前置缺失（key / 代理 / `NODE_USE_ENV_PROXY`） | `start-dsh-web.ps1 -DryRun` 逐项检查后重启宿主 |
-| 改了 preset/插件但行为没变 | 运行中的宿主缓存模块与 exports（E21） | 重启宿主 |
-| `advance` 永远不达标 | 判据读的是真实数字：`sub_domain` / 论文 / 解析 / 提取 / 四库条目 | 看 `facts_json` 对号入座 |
-| 检索召回很差 | 关键词太窄，或用了 `search_papers_by_relevance`（它的 `limit` 不生效） | 加 `lexicon.query_expansion` 里的同义表述；批量发现用 `snippet_search` |
-| 打分报告里 `retrieval_mode: keyword_only` | 尚未接入 embedding（当前设计如此） | 语义撞车靠裁判——这是刻意的分工，不是故障 |
+| 会话里一个 cvagent 工具都没有 | 预设没挂上（一行坏了整份都挂不上） | ① `node scripts/check-preset.mjs`；② `node scripts/probe-preset-rows.mjs`（会在新进程里逐行试挂，报错和宿主里逐字一致）；③ 看宿主窗口的报错 |
+| 它说"论文库新增 0 篇（存量 390，基线 390）" | **不是故障**：计时是从你定方向那一刻开始的 | 想用上现有存量 → 告诉它"就用现有的"；想重新计时 → 改个关键词重说一次方向 |
+| 检索工具不见了 | 启动时没带密钥/代理 | `start-dsh-web.ps1 -DryRun` 逐项检查，然后**重启宿主** |
+| 改了插件但行为没变 | 宿主缓存着旧代码 | 重启宿主 |
+| 一直说不够格 | 判据看的是真实数字（论文/解析/笔记/四类条目） | 让它把"还缺什么"念给你，对号入座 |
+| 找到的论文很少 | 关键词太窄 | 加同义说法（中文+英文）再找一次 |
+| 打分说"关键词模式" | 还没接语义检索（设计如此） | 语义上的撞车由打分裁判负责，不是故障 |
+
+---
+
+## 附：想自己核对时的对照表
+
+平时不用看，出问题或想查证时再用。
+
+| 你听到的说法 | 背后是什么 |
+| --- | --- |
+| 方向 / 关键词 | `cvagent_scope_set`（`sub_domain` / `keywords`） |
+| 就用现有的 | `cvagent_scope_set(reuse_existing=true)`，状态里 `corpus_mode: reuse` |
+| 只补新的 | `corpus_mode: extend`，落盘时记下"基线"，此后只认新增 |
+| 找文献 / 入库 | `cvagent_kb_scout` / `cvagent_kb_import_papers` |
+| 下载解析 | `scripts/batch-parse.mjs`（MinerU，不在会话里） |
+| 做笔记 | `cvagent_kb_extract`（Reader 子代理） |
+| 归纳条目 | `cvagent_kb_analyze`（Analyst 子代理） |
+| 结算阶段 | `cvagent_state_advance` → `cvagent_gate_resolve` |
+| 领域包 | Domain Pack：`cvagent_domain_bootstrap` / `_freeze` / `_propose_revision` / `_bind` |
+| 生成/打分 idea | `cvagent_idea_generate` / `cvagent_idea_score` |

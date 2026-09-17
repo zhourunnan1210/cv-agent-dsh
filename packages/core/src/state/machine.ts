@@ -95,6 +95,13 @@ export interface ProjectState {
    * 记下基线后，知识阶段的判据只认**本课题新增**。
    */
   readonly scope_baseline?: ScopeBaseline | null
+  /**
+   * 本课题的语料策略（用户裁定）：`extend`（默认，只认新增）/ `reuse`（沿用存量，不再扩充）。
+   *
+   * `undefined` 也按 `extend` 处理，同时是"这条状态来自升级前的代码"的判据
+   * （见 `setResearchScope` 的 legacy 分支与判据里的补记提示）。
+   */
+  readonly corpus_mode?: CorpusMode
   readonly stages: Readonly<Partial<Record<Stage, StageRecord>>>
   readonly pending_gate: PendingGate | null
   readonly resolved_gates: readonly ResolvedGate[]
@@ -242,6 +249,19 @@ export function createProjectState(projectId: string, mode: Mode | null = null):
 }
 
 /**
+ * 本课题怎么建语料（**由用户裁定**，不是 agent 自己决定）。
+ *
+ * - `extend`（默认）：沿用存量 + **只认新增**。落盘范围时记基线，门控要求本课题补足新语料。
+ * - `reuse`：用户认为现有语料已覆盖本课题，**不再扩充**；门控回到绝对口径（存量算数）。
+ *
+ * 为什么要有 `reuse`：本地库已经很丰富时，"再检索→下载→解析→提取→归档"未必必要，
+ * 硬跑一遍是浪费（MinerU 额度、时间、还有误入库的风险）。但**不能靠模型自行判断**
+ * ——那等于把门控交回给它自己。所以模型必须**用白话问用户**，用户答"沿用现有的"，
+ * 才由 `cvagent_scope_set(reuse_existing=true)` 落成这个状态（可审计）。
+ */
+export type CorpusMode = 'extend' | 'reuse'
+
+/**
  * 落盘研究范围（P3-4）：细分领域 + 关键词组。
  *
  * 纯函数。`keywords` 去重去空、保留顺序；`sub_domain` 去空白，空串视为 `null`
@@ -256,18 +276,26 @@ export function createProjectState(projectId: string, mode: Mode | null = null):
  * 只认**相对基线的增量**。范围没变（重复落盘同一范围）则**不动**基线——否则每次
  * `scope_set` 都会把进度清零。
  *
- * 快照是**惰性求值**的：`snapshot` 只在范围确实变化时才被调用，避免每次落盘都去查库。
+ * 快照是**惰性求值**的：`snapshot` 只在确实要记基线时才被调用，避免每次落盘都去查库。
+ *
+ * ## `corpusMode`：用户说"这批够用了，别再找了"时的出口
+ *
+ * 本地库已经很丰富时，硬跑一遍"检索→下载→解析→提取→归档"未必必要。但**不能由模型
+ * 自行判断**——那等于把门控交回给它自己。所以模型要用白话问用户，用户答"沿用现有的"，
+ * 才落成 `reuse`（见 {@link CorpusMode}）：此时基线清空、判据回到绝对口径。
  *
  * @param state - 当前状态。
  * @param scope - 本次要落盘的范围（字段缺省 = 保持原值）。
  * @param now - ISO 时间戳（注入以便测试）。
- * @param snapshot - 存量快照供应函数；仅在范围变化时调用。
+ * @param snapshot - 存量快照供应函数；仅在需要记基线时调用。
+ * @param corpusMode - 语料策略（缺省保持原值，从未设过则是 `extend`）。
  */
 export function setResearchScope(
   state: ProjectState,
   scope: { readonly sub_domain?: string | null; readonly keywords?: readonly string[] },
   now: string = new Date().toISOString(),
   snapshot?: () => ScopeBaselineCounts,
+  corpusMode?: CorpusMode,
 ): ProjectState {
   const subDomain = scope.sub_domain === undefined
     ? state.sub_domain
@@ -276,6 +304,8 @@ export function setResearchScope(
     ? state.keywords
     : [...new Set(scope.keywords.map((item) => item.trim()).filter((item) => item !== ''))]
 
+  const mode: CorpusMode = corpusMode ?? state.corpus_mode ?? 'extend'
+  const modeChanged = mode !== (state.corpus_mode ?? 'extend')
   const changed = subDomain !== state.sub_domain || !sameKeywords(keywords, state.keywords)
   /**
    * 基线字段**缺失**（`undefined`）= 这条状态由升级前的代码写入。
@@ -284,19 +314,30 @@ export function setResearchScope(
    * 而它恰恰是最需要基线的那些状态（范围早已落盘、存量早已存在）。
    * 注意与 `null` 的区别：`null` 是"明确没有基线"，不再重复补记。
    */
-  const missingBaseline = state.scope_baseline === undefined
+  const legacy = state.corpus_mode === undefined && state.scope_baseline === undefined
 
-  if (!changed && !missingBaseline) return { ...state, sub_domain: subDomain, keywords }
+  // 用户裁定"沿用存量、不再扩充"：不需要基线，判据回到绝对口径。
+  if (mode === 'reuse') {
+    if (!changed && !modeChanged && state.scope_baseline === null) {
+      return { ...state, sub_domain: subDomain, keywords, corpus_mode: mode }
+    }
+    return { ...state, sub_domain: subDomain, keywords, corpus_mode: mode, scope_baseline: null }
+  }
+
+  // `extend`：范围没变、策略没变、基线也在 → 什么都不动（重复落盘不清零进度）。
+  if (!changed && !modeChanged && !legacy) {
+    return { ...state, sub_domain: subDomain, keywords, corpus_mode: mode }
+  }
 
   // 范围被清空：没有基线可言（下次落范围时会重新记）。
   if (subDomain === null && keywords.length === 0) {
-    return { ...state, sub_domain: subDomain, keywords, scope_baseline: null }
+    return { ...state, sub_domain: subDomain, keywords, corpus_mode: mode, scope_baseline: null }
   }
 
   const baseline: ScopeBaseline | null = snapshot === undefined
     ? null
     : { recorded_at: now, sub_domain: subDomain, keywords, ...snapshot() }
-  return { ...state, sub_domain: subDomain, keywords, scope_baseline: baseline }
+  return { ...state, sub_domain: subDomain, keywords, corpus_mode: mode, scope_baseline: baseline }
 }
 
 function sameKeywords(left: readonly string[], right: readonly string[]): boolean {
@@ -412,7 +453,13 @@ export function evaluateCriteria(
   thresholds: CriteriaThresholds = DEFAULT_CRITERIA,
 ): readonly string[] {
   const missing: string[] = []
-  const baseline = state.scope_baseline ?? null
+  /**
+   * 口径基线的**实际生效值**。
+   *
+   * 用户裁定"沿用存量"（`corpus_mode === 'reuse'`）时一律按绝对口径——存量为零的基线
+   * 在这里表达"没有基线"，比到处判两次模式清楚。
+   */
+  const baseline = state.corpus_mode === 'reuse' ? null : (state.scope_baseline ?? null)
 
   /**
    * 一个计数的"本课题口径"描述：无基线时是绝对值；有基线时是增量，
@@ -439,7 +486,8 @@ export function evaluateCriteria(
       if (state.sub_domain === null) missing.push('研究范围未确定（sub_domain 为空）：先用 cvagent_scope_set 落盘细分领域与关键词')
       // 升级前的状态没有基线字段。此时绝对口径会把存量当成本课题成果——
       // **宁可卡住也不误放**：让人再落一次范围，在存量上划出本课题的起点。
-      if (state.sub_domain !== null && state.scope_baseline === undefined) {
+      // 用户已明确裁定"沿用存量"（reuse）时不提示：那是知情的决定，不是遗漏。
+      if (state.sub_domain !== null && state.corpus_mode !== 'reuse' && state.scope_baseline === undefined) {
         missing.push('口径基线未记录（本状态由升级前写入）：再调一次 cvagent_scope_set（含本课题范围）以在现有存量上划出起点')
       }
       const papers = gauge(facts.papers, baseline?.papers ?? 0)

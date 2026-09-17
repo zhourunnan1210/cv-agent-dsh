@@ -198,6 +198,44 @@ describe('口径基线（换课题后只认新增）', () => {
     const third = setResearchScope(migrated, { sub_domain: '跨生成器泛化', keywords: ['cross-generator'] }, '2026-09-17T13:00:00Z', () => ({ ...EXISTING, papers: 999 }))
     expect(third.scope_baseline).toEqual(migrated.scope_baseline)
   })
+
+  /**
+   * `reuse`：用户裁定"现有文献够用了，别再找了"。
+   *
+   * 这是把门控口径交给用户——但必须是**知情的选择**（模型先问、用户答），
+   * 而不是模型自己觉得够了就跳过检索。
+   */
+  it('用户裁定沿用存量（reuse）→ 判据回到绝对口径，存量算数', () => {
+    const extended = setResearchScope(
+      { ...createProjectState('p1', 'confirm'), current_stage: 'knowledge_building' },
+      { sub_domain: '跨生成器泛化' },
+      '2026-09-17T10:00:00Z',
+      () => EXISTING,
+    )
+    // extend：存量顶满也不放行
+    expect(evaluateCriteria(extended, { ...EXISTING, entries: { ...EXISTING.entries } })).toHaveLength(7)
+
+    // 用户答"就用现有的" → reuse
+    const reused = setResearchScope(extended, {}, '2026-09-17T11:00:00Z', undefined, 'reuse')
+    expect(reused.corpus_mode).toBe('reuse')
+    expect(reused.scope_baseline, 'reuse 不需要基线').toBeNull()
+    expect(evaluateCriteria(reused, { ...EXISTING, entries: { ...EXISTING.entries } })).toEqual([])
+
+    // 反悔：改回"补新的" → 重新记基线（从现在起算新增）
+    const back = setResearchScope(reused, {}, '2026-09-17T12:00:00Z', () => ({ ...EXISTING, papers: 450 }), 'extend')
+    expect(back.corpus_mode).toBe('extend')
+    expect(back.scope_baseline).toMatchObject({ papers: 450 })
+    expect(evaluateCriteria(back, { ...EXISTING, papers: 450, entries: { ...EXISTING.entries } })[0])
+      .toBe('论文库新增 0/100 篇（存量 450，基线 450）')
+  })
+
+  it('reuse 时不提示"基线未记录"（那是知情决定，不是遗漏）', () => {
+    const legacy: ProjectState = { ...createProjectState('p1', 'confirm'), current_stage: 'knowledge_building', sub_domain: '跨生成器泛化' }
+    const reused = setResearchScope(legacy, {}, '2026-09-17T10:00:00Z', undefined, 'reuse')
+    const missing = evaluateCriteria(reused, { ...EXISTING, entries: { ...EXISTING.entries } })
+    expect(missing).not.toContain('口径基线未记录（本状态由升级前写入）：再调一次 cvagent_scope_set（含本课题范围）以在现有存量上划出起点')
+    expect(missing).toEqual([])
+  })
 })
 
 describe('后续阶段判据', () => {

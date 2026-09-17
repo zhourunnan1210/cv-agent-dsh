@@ -62,13 +62,22 @@ export function apply(ctx: Context): void {
   toolsRuntime.register(defineTool({
     name: STATE_TOOLS.scopeSet,
     description:
-      '落盘研究范围（细分领域 + 检索关键词组）。这是**与用户对话后的产物**：'
-      + '先用 ask_user_question 收敛细分领域，再调本工具写入状态；'
+      '落盘研究范围（细分领域 + 检索关键词组）以及**本课题的语料策略**。'
+      + '这是**与用户对话后的产物**：先用 ask_user_question 收敛细分领域，再调本工具写入状态；'
       + 'Scout 检索（cvagent_kb_scout）缺省就读这里的范围。'
-      + '只覆盖传入的字段：不传即保持原值，传空串表示清空。',
+      + '只覆盖传入的字段：不传即保持原值，传空串表示清空。'
+      + '⚠️ `reuse_existing` 必须**先问过用户**才能置 true（见该参数说明）。',
     parameters: {
       sub_domain: { type: 'string', description: '细分领域一句话（如「音频深度伪造检测」）' },
       keywords: { type: 'array', items: { type: 'string' }, description: '检索关键词组（建议 3–8 个，覆盖同义表述与英文术语）' },
+      reuse_existing: {
+        type: 'boolean',
+        description:
+          'true = 用户裁定「现有文献够用，不再扩充」：门控改按库内总量算，不再要求本课题新增。'
+          + 'false = 恢复「沿用存量 + 只补新增」（默认）。'
+          + '⚠️ 只能在**已经用白话问过用户**、且用户明确表示不必再找之后才置 true——'
+          + '这是把门控口径交给用户裁定，不是模型可以自己决定的开关。',
+      },
     },
     output: {
       schema: {
@@ -78,6 +87,7 @@ export function apply(ctx: Context): void {
           sub_domain: { type: 'string', required: true, description: '落盘后的细分领域；未设置时为空串' },
           keywords: { type: 'array', required: true, items: { type: 'string' } },
           scope_ready: { type: 'boolean', required: true, description: 'false 表示细分领域仍为空（知识阶段不会放行）' },
+          corpus_mode: { type: 'string', required: true, enum: ['extend', 'reuse'], description: '本课题语料策略：extend=只认新增；reuse=沿用存量不再扩充' },
         },
       },
       render: renderJson,
@@ -86,11 +96,13 @@ export function apply(ctx: Context): void {
       const next = await service.setScope({
         ...(args.sub_domain === undefined ? {} : { sub_domain: String(args.sub_domain) }),
         ...(args.keywords === undefined ? {} : { keywords: args.keywords.map((item) => String(item)) }),
+        ...(args.reuse_existing === undefined ? {} : { reuse_existing: args.reuse_existing === true }),
       })
       return {
         sub_domain: next.sub_domain ?? '',
         keywords: [...next.keywords],
         scope_ready: next.sub_domain !== null,
+        corpus_mode: next.corpus_mode ?? 'extend',
       }
     },
   }))

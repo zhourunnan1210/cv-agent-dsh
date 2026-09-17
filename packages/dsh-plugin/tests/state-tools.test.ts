@@ -263,6 +263,36 @@ describe('cvagent 状态族工具（真实实现 + 真实管线）', () => {
     expect(result.value.satisfied).toBe(true)
   })
 
+  /**
+   * 用户说"现有文献够用了，别再找了"——流程不该卡死。
+   *
+   * 这是真实的用户诉求（2026-09-17）：本地库很丰富时，再跑一遍
+   * 检索→下载→解析→提取→归档未必必要。出口是**用户裁定**，不是模型自行跳过。
+   */
+  it('用户裁定沿用存量（reuse_existing=true）→ 直接放行，不再要求新增', async () => {
+    seedSatisfiedKnowledge(env.kb)
+    const first = await env.execute('cvagent_scope_set', { sub_domain: '跨生成器泛化' })
+    expect(first.value.corpus_mode).toBe('extend')
+
+    // 未问用户之前：extend 口径下不放行
+    expect((await env.execute('cvagent_state_advance', { summary: 'x' })).value.satisfied).toBe(false)
+
+    // 用户答"就用现有的" → 落成 reuse
+    const reused = await env.execute('cvagent_scope_set', { reuse_existing: true })
+    expect(reused.value.corpus_mode).toBe('reuse')
+    expect(reused.value.sub_domain).toBe('跨生成器泛化') // 只改策略，不动范围
+
+    const after = await env.execute('cvagent_state_advance', { summary: '沿用存量，不扩充' })
+    expect(after.value.satisfied).toBe(true)
+    const state = await env.service.getState()
+    expect(state?.scope_baseline).toBeNull()
+
+    // 反悔：改回"补新的" → 重新记基线，门控重新要求新增
+    const back = await env.execute('cvagent_scope_set', { reuse_existing: false })
+    expect(back.value.corpus_mode).toBe('extend')
+    expect((await env.execute('cvagent_state_advance', { summary: 'y' })).value.satisfied).toBe(false)
+  })
+
   it('喂饱知识库并落盘范围 → 知识阶段放行；缺失项随之清空', async () => {
     await env.execute('cvagent_scope_set', { sub_domain: '音频深伪检测', keywords: ['audio deepfake'] })
     seedSatisfiedKnowledge(env.kb)
