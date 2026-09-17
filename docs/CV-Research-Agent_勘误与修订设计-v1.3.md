@@ -1211,7 +1211,38 @@ coding harness agent），我们只提供上下文/项目背景。
 
 ---
 
+### 12.7 P3-4 已交付（2026-09-17，用户批准的三项）
+
+按用户裁定「1、2、3 全做」，三处缺口一次补齐：
+
+| # | 交付物 | 内容 |
+| --- | --- | --- |
+| 1 | **检索段闭环** | ① 状态新增 `sub_domain` / `keywords`（core `setResearchScope` 纯函数归一化；空串与未设置归一到同一状态）+ 工具 `cvagent_scope_set`（6 个状态工具）；② **`cvagent_kb_scout`**：按范围委派 Scout 子代理（`toolFilter = SCOUT_ALLOWED_TOOLS`，**刻意不含 `snippet_search`**——Scout 只回候选），候选形状校验后返回，并把可入库子集打成 `import_json`；③ **`cvagent_kb_import_papers`**：批量入库，逐条回传 inserted/merged/needs_review/error（**部分成功是正常结果**）。检索与写入职责分离：Scout 不写库 |
+| 2 | **Analyst 工具化** | **`cvagent_kb_analyze`**：确定性构造去重上下文（该批提取的既有相关条目 + 提取内容）→ 委派 Analyst（只给 `cvagent_kb_search/summary` 只读）→ 提案形状校验（缺 `source_papers`/库名非法一律丢弃并计入 `skipped`）→ 按 §7.5.2 规则写入；`dry_run=true` 只回提案供复核 |
+| 3 | **阶段判据升级** | 判据从「非空摘要即完成」的占位升级为**真实数字判据**（core `evaluateCriteria` + `DEFAULT_CRITERIA`）：论文 ≥100、已解析 ≥50、提取 ≥20（P2-7 抽检口径）、四库条目 5/5/10/5，且 **`sub_domain` 未确定则一律不放行**；`advance` 回传 `facts_json` 供核对。事实由状态服务从 `kb` **直接读取**——模型没有机会自报数字 |
+
+**两处架构性改动（都在组合与契约层面，值得记住）**：
+
+1. **两个 isolate group 合并为一个** `cvagent-project-group`（`isolate: { projectState: true, kb: true }`）。
+   原因：`advance` 的判据必须读知识库真实数字，而**跨 realm 解析不到**——分着放，
+   判据就只能退化成"模型自报"，门控等于没有。合并同时消除"同一 DB 两个 kb 实例"的隐患。
+2. **`StageFacts` 由外部注入 core**：core 保持纯同步（`evaluate` 不变异步），
+   事实在服务层**先采集、再判定**。这条边界让判据既能吃真实数字，又不把纯逻辑层污染成异步接口。
+
+**顺带补掉一个"门控永远不会达标"的隐患**：`collectFacts` 里 `parsed` 与 `experiments` 起初没有数据源
+（`kb.parsedCount()` 不存在、`experiments/` 没人数），表现为**判据恒不满足**而表面一切正常。
+现已补 `KbService.parsedCount()` 与"`experiments/<id>/RESULTS.md` 存在即算收敛"的口径
+（与 `check-experiment.mjs` 一致）。
+
+**测试**：`core/tests/criteria.test.ts` 10 条（范围归一化、四库分别把关、缺什么说什么、阈值可覆盖、后续阶段）；
+`packages/dsh-plugin/tests/kb-research.test.ts` 8 条（Scout 契约与无标识候选过滤、批量入库部分成功、
+Analyst 去重上下文与提案校验、dry_run）；`tests/state-tools.test.ts` 重写为 15 条（真实数字判据 +
+scope_set + idea 计数 + 实验收敛口径 + 三模式达标流水线）。计数：core 53、dsh-plugin 114。
+
+---
+
 ## 附录 A：本次已落地的仓库产物
+
 
 
 ```

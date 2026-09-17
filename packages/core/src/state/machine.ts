@@ -79,6 +79,15 @@ export interface ProjectState {
   readonly current_stage: Stage
   /** `null` 表示会话尚未确定模式，dsh 侧应主动询问一次并落盘（勘误 §4.3）。 */
   readonly mode: Mode | null
+  /**
+   * 研究范围（P3-4 新增）：与用户对话确定的**细分领域**及其检索关键词组。
+   *
+   * 为什么落盘而不是留在对话里：Scout 委派、Domain Pack 生成、idea 生成都要用它；
+   * 而会话历史会被压缩（E 系列教训），落盘才是不lost 的载体。`null` 表示尚未确定。
+   */
+  readonly sub_domain: string | null
+  /** 关键词组（用于检索扩展；缺省时用 Domain Pack 的 `lexicon.query_expansion`）。 */
+  readonly keywords: readonly string[]
   readonly stages: Readonly<Partial<Record<Stage, StageRecord>>>
   readonly pending_gate: PendingGate | null
   readonly resolved_gates: readonly ResolvedGate[]
@@ -216,9 +225,161 @@ export function createProjectState(projectId: string, mode: Mode | null = null):
     project_id: projectId,
     current_stage: 'knowledge_building',
     mode,
+    sub_domain: null,
+    keywords: [],
     stages: { knowledge_building: { status: 'pending' } },
     pending_gate: null,
     resolved_gates: [],
     rollback_points: [],
   }
+}
+
+/**
+ * 落盘研究范围（P3-4）：细分领域 + 关键词组。
+ *
+ * 纯函数。`keywords` 去重去空、保留顺序；`sub_domain` 去空白，空串视为 `null`
+ * （"没填"与"填了空字符串"必须归一到同一个状态，否则下游要判两次）。
+ */
+export function setResearchScope(
+  state: ProjectState,
+  scope: { readonly sub_domain?: string | null; readonly keywords?: readonly string[] },
+): ProjectState {
+  const subDomain = scope.sub_domain === undefined
+    ? state.sub_domain
+    : (scope.sub_domain === null || scope.sub_domain.trim() === '' ? null : scope.sub_domain.trim())
+  const keywords = scope.keywords === undefined
+    ? state.keywords
+    : [...new Set(scope.keywords.map((item) => item.trim()).filter((item) => item !== ''))]
+  return { ...state, sub_domain: subDomain, keywords }
+}
+
+/**
+ * 阶段判据所需的**事实**（由 dsh 侧从知识库/委派结果计算后注入）。
+ *
+ * 为什么事实由外部注入而不是本层去查：core 是平台无关的纯逻辑层，
+ * 不碰数据库；而判据必须是**真实数字**而不是模型自报——所以由 dsh 侧的服务
+ * 直接从 kb 读，模型没有机会虚报。
+ */
+export interface StageFacts {
+  /** 论文库总条数。 */
+  readonly papers: number
+  /** 已解析全文的论文数。 */
+  readonly parsed: number
+  /** 已完成 Reader 结构化提取的论文数。 */
+  readonly extractions: number
+  /** 四库条目数（problems/methods/innovations/failures）。 */
+  readonly entries: Readonly<Record<string, number>>
+  /** 已生成的候选 idea 数（缺省 0）。 */
+  readonly ideas_generated?: number
+  /** 已打分的 idea 数（缺省 0）。 */
+  readonly ideas_scored?: number
+  /** 已收敛（有 RESULTS）的实验数（缺省 0）。 */
+  readonly experiments?: number
+}
+
+/** 各阶段的判据阈值（缺省即 v1.2 §9.3 的量化口径，可在项目配置里覆盖）。 */
+export interface CriteriaThresholds {
+  readonly knowledge_building: {
+    /** 论文库下限（v1.2 §14 的 Phase 2 验收口径是 ≥100 篇）。 */
+    readonly min_papers: number
+    readonly min_parsed: number
+    /** 抽检口径：P2-7 的"抽检 20 篇"就是提取数下限。 */
+    readonly min_extractions: number
+    /** 四库各自的条目下限。 */
+    readonly min_problems: number
+    readonly min_methods: number
+    readonly min_innovations: number
+    /** 失败方法库下限（idea 复查的前提：库里得有东西可查）。 */
+    readonly min_failures: number
+  }
+  readonly idea_generation: {
+    readonly min_candidates: number
+  }
+  readonly idea_scoring: {
+    readonly min_scored: number
+  }
+  readonly experiment: {
+    readonly min_experiments: number
+  }
+  readonly writing: {
+    /** 写作阶段不设下限：由人工门控把关（交付物形态差异太大）。 */
+    readonly min_drafts: number
+  }
+}
+
+/** 默认阈值。 */
+export const DEFAULT_CRITERIA: CriteriaThresholds = {
+  knowledge_building: {
+    min_papers: 100,
+    min_parsed: 50,
+    min_extractions: 20,
+    min_problems: 5,
+    min_methods: 5,
+    min_innovations: 10,
+    min_failures: 5,
+  },
+  idea_generation: { min_candidates: 3 },
+  idea_scoring: { min_scored: 1 },
+  experiment: { min_experiments: 1 },
+  writing: { min_drafts: 0 },
+}
+
+/**
+ * 按阶段判据求值（纯函数）：返回**未满足项清单**（空数组 = 达标）。
+ *
+ * 设计要点：
+ * - 缺什么就明确说缺什么（含"当前/要求"两个数字），因为这份清单会直接回传给 Agent 与用户；
+ * - 判据是可量化的真实事实，**不接受模型自报**（见 `StageFacts`）；
+ * - `sub_domain` 未确定时，知识阶段即便数字达标也不放行——检索范围没定就谈"知识建成"没有意义。
+ */
+export function evaluateCriteria(
+  state: ProjectState,
+  facts: StageFacts,
+  thresholds: CriteriaThresholds = DEFAULT_CRITERIA,
+): readonly string[] {
+  const missing: string[] = []
+  const entryCount = (store: string): number => facts.entries[store] ?? 0
+
+  switch (state.current_stage) {
+    case 'knowledge_building': {
+      const limits = thresholds.knowledge_building
+      if (state.sub_domain === null) missing.push('研究范围未确定（sub_domain 为空）：先用 cvagent_scope_set 落盘细分领域与关键词')
+      if (facts.papers < limits.min_papers) missing.push(`论文库 ${facts.papers}/${limits.min_papers} 篇`)
+      if (facts.parsed < limits.min_parsed) missing.push(`已解析全文 ${facts.parsed}/${limits.min_parsed} 篇`)
+      if (facts.extractions < limits.min_extractions) missing.push(`结构化提取（抽检口径）${facts.extractions}/${limits.min_extractions} 篇`)
+      if (entryCount('problems') < limits.min_problems) missing.push(`问题卡 ${entryCount('problems')}/${limits.min_problems} 条`)
+      if (entryCount('methods') < limits.min_methods) missing.push(`方法卡 ${entryCount('methods')}/${limits.min_methods} 条`)
+      if (entryCount('innovations') < limits.min_innovations) missing.push(`创新卡 ${entryCount('innovations')}/${limits.min_innovations} 条`)
+      if (entryCount('failures') < limits.min_failures) missing.push(`失败方法库 ${entryCount('failures')}/${limits.min_failures} 条`)
+      break
+    }
+    case 'idea_generation': {
+      const ideas = facts.ideas_generated ?? 0
+      if (ideas < thresholds.idea_generation.min_candidates) {
+        missing.push(`候选 idea ${ideas}/${thresholds.idea_generation.min_candidates} 条（cvagent_idea_generate）`)
+      }
+      break
+    }
+    case 'idea_scoring': {
+      const scored = facts.ideas_scored ?? 0
+      if (scored < thresholds.idea_scoring.min_scored) {
+        missing.push(`已打分 idea ${scored}/${thresholds.idea_scoring.min_scored} 条（cvagent_idea_score）`)
+      }
+      break
+    }
+    case 'experiment': {
+      const experiments = facts.experiments ?? 0
+      if (experiments < thresholds.experiment.min_experiments) {
+        missing.push(`已收敛实验 ${experiments}/${thresholds.experiment.min_experiments} 个（experiments/ 下需有 RESULTS.md）`)
+      }
+      break
+    }
+    case 'writing': {
+      if (thresholds.writing.min_drafts > 0) {
+        missing.push(`草稿数未达下限 ${thresholds.writing.min_drafts}（当前不设下限，此分支保留）`)
+      }
+      break
+    }
+  }
+  return missing
 }

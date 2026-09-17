@@ -45,12 +45,32 @@ export const STATE_TOOLS = {
   modeSet: 'cvagent_mode_set',
   /** 落盘 gate 决议（三段式的第 ③ 步，见勘误 §4.3）。 */
   gateResolve: 'cvagent_gate_resolve',
+  /**
+   * 落盘研究范围（细分领域 + 检索关键词），P3-4 新增。
+   *
+   * 为什么单独一个工具而不是塞进 `advance`：范围是**用户与 Agent 对话的产物**，
+   * 会在知识阶段被反复修订（改关键词、缩小领域），而 `advance` 是阶段出口动作，
+   * 两者语义与调用时机都不同。
+   */
+  scopeSet: 'cvagent_scope_set',
 } as const
 
 /** 知识库族（对应 v1.2 §15.2）。 */
 export const KB_TOOLS = {
   importPaper: 'cvagent_kb_import_paper',
+  /** 批量入库（Scout 检索后的落地口；逐条回传结果，不是"要么全成要么全败"）。 */
+  importPapers: 'cvagent_kb_import_papers',
   extract: 'cvagent_kb_extract',
+  /**
+   * Scout 委派（P3-4）：把"按细分领域与关键词检索论文"委派给只读检索工具的
+   * 子代理，返回候选列表；**入库仍由主 Agent 单独调用**（检索与写入职责分离）。
+   */
+  scout: 'cvagent_kb_scout',
+  /**
+   * Analyst 委派（P3-4）：把"从 Reader 提取归纳出库条目并去重"委派给子代理，
+   * 由它产出条目、由本工具按 §7.5.2 规则写入（`dry_run` 可只回提案）。
+   */
+  analyze: 'cvagent_kb_analyze',
   upsertEntry: 'cvagent_kb_upsert_entry',
   search: 'cvagent_kb_search',
   summary: 'cvagent_kb_summary',

@@ -53,18 +53,28 @@
   config:
     maxBytes: 65536
 
-# ── cv-research project state (isolate realm) ────────────────────────────────
+# ── cv-research project plane (single isolate realm) ─────────────────────────
 #
-# Service-plane decision frozen in docs/勘误 §4.4.1 (2026-09-15): projectState
-# is per-project private state, so it lives here — behind an isolate realm —
-# rather than in the host composition. The tool row consumes both the isolated
-# projectState and the host `tools` registry; both rows must share the group so
-# the consumer resolves this preset's own service instance.
-- id: cvagent-state-group
+# Service-plane decision frozen in docs/勘误 §4.4.1 (2026-09-15): projectState and
+# `kb` are both **per-project private state**, so they live here — behind an
+# isolate realm — rather than in the host composition.
+#
+# ⚠️ 2026-09-17 起两者合为**一个 group / 一个 realm**（P3-4 需要）：
+# `projectState.advance` 的阶段判据必须读知识库的**真实数字**（论文/解析/提取/四库
+# 条目数），而事实只能由同 realm 的服务解析。若仍分两个 realm，状态工具读不到 kb，
+# 判据就只能退化成"模型自报数字"——那等于没有门控。
+#
+# 同一 group 还有一个附带好处：`ideaScore` 与 `kb` 天然同 realm（它 inject kb 读同一实例），
+# 不会出现"同一 DB 两个连接、两份缓存"的语义分叉。
+#
+# MinerU 的跨项目额度账本**刻意不在这里**：它是跨项目共享资源，住在宿主组合里
+# （cv-agent-dsh 的 cordis.patch.yml）。
+- id: cvagent-project-group
   name: cordis:group
   group: true
   isolate:
     projectState: true
+    kb: true
   config:
     - id: cvagent-state
       name: cv-agent-dsh/state
@@ -72,19 +82,6 @@
     - id: tool-cvagent-state
       name: cv-agent-dsh/state-tools
 
-# ── cv-research knowledge base (isolate realm) ───────────────────────────────
-#
-# Same frozen decision (§4.4.1): `kb` is per-project private data — two sessions
-# can run two projects, so the paper library lives behind its own isolate realm.
-# Both the service row and its tool row share the group. MinerU's cross-project
-# quota ledger is deliberately NOT here: it lives in the host composition
-# (cordis.patch.yml of cv-agent-dsh).
-- id: cvagent-kb-group
-  name: cordis:group
-  group: true
-  isolate:
-    kb: true
-  config:
     - id: cvagent-kb
       name: cv-agent-dsh/kb
 
@@ -98,18 +95,21 @@
       name: cv-agent-dsh/kb-extract
 
     # P3-1: cvagent_kb_upsert_entry / cvagent_kb_search / cvagent_kb_summary —
-    # 三库读写面（Analyst 写条目、Orchestrator 检索与总览）。与 kb 服务同组的
-    # 原因同上；**单列一行**是为了让角色矩阵能按需授予：Reader 子代理应有
-    # 读文件 + 结构化输出，但不该拿到三库写权限。
+    # 三库读写面（Analyst 写条目、Orchestrator 检索与总览）。**单列一行**
+    # 是为了让角色矩阵能按需授予：Reader 子代理应有读文件 + 结构化输出，
+    # 但不该拿到三库写权限。
     - id: tool-cvagent-kb-entries
       name: cv-agent-dsh/kb-entries
 
+    # P3-4: cvagent_kb_scout / cvagent_kb_import_papers / cvagent_kb_analyze —
+    # 检索委派（Scout）、批量入库、归纳委派（Analyst）。三者都 inject kb。
+    - id: tool-cvagent-kb-research
+      name: cv-agent-dsh/kb-research
+
     # P3-3b: ideaScore 服务 + idea 族工具（生成 / 打分）。
     #
-    # ⚠️ 这两行**必须留在本 group 内**：`ideaScore` 的状态就是 `kb`（§4.4.1 裁定
-    # "无自有状态 + 读 kb"），它 inject kb 才能读到同一个库实例。若另起一个
-    # `isolate: { kb: true }` 的 group，会得到**同一文件上的第二个 kb 实例**
-    # （两份缓存、两次迁移检查），去重与检索语义就会分叉。
+    # `ideaScore` 的状态就是 `kb`（§4.4.1 裁定"无自有状态 + 读 kb"），
+    # 必须与 kb 同 realm 才能读到同一个库实例。
     - id: cvagent-idea-score
       name: cv-agent-dsh/idea-score
 

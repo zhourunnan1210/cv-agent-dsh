@@ -23,17 +23,24 @@
 import { Service } from '@deepseek-ai/cordis'
 import type { Context } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
+import { access, readdir } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { resolve } from 'node:path'
 
 import {
   createProjectState,
+  DEFAULT_CRITERIA,
+  evaluateCriteria,
   requestGate,
   resolveGate,
+  setResearchScope,
   type GateCriteria,
   type GateDecision,
   type Mode,
   type ProjectState,
   type ResolvedGate,
   type Stage,
+  type StageFacts,
 } from '@cv-research/core'
 
 import { createFileStateStore } from './store.js'
@@ -47,12 +54,15 @@ export interface Config {
   stateFilename?: string
   /** 新建项目时写入的 project_id。 */
   projectId?: string
+  /** 实验归档目录（阶段判据数"已收敛实验"用）。 */
+  experimentsDir?: string
 }
 
 export const Config = Schema.object({
   projectDir: Schema.string().default('data/projects/default').description('项目数据目录；project_state.json 与 snapshots/ 落在这里。'),
   stateFilename: Schema.string().default('project_state.json').description('状态文件名。'),
   projectId: Schema.string().default('cv-research-project').description('新建项目时写入的 project_id。'),
+  experimentsDir: Schema.string().default('experiments').description('实验归档目录（归档原则 §2）。'),
 })
 
 type ResolvedConfig = Required<Config>
@@ -71,6 +81,7 @@ export function resolveStateConfig(config: Config | undefined): ResolvedConfig {
     projectDir: config?.projectDir ?? 'data/projects/default',
     stateFilename: config?.stateFilename ?? 'project_state.json',
     projectId: config?.projectId ?? 'cv-research-project',
+    experimentsDir: config?.experimentsDir ?? 'experiments',
   }
 }
 
@@ -81,20 +92,20 @@ const MODE_LABEL: Readonly<Record<Mode, string>> = {
 }
 
 /**
- * Phase 1 的默认完成判据（§9.3 的占位实现）：
- * 当前阶段提供非空摘要即视为完成。
+ * 完成判据（P3-4：从 Phase 1 占位升级为**真实数字判据**，v1.2 §9.3）。
  *
- * 后续按阶段配置化（v1.2 §9.3 的判据表）：知识构建判覆盖率、实验判
- * P0 + Repro 检查清单等。替换时本常量迁移到 Domain Pack / 配置即可，
- * 服务接口不变。
+ * 判据不再看"摘要是否为空"，而是看知识库/委派结果的真实事实：
+ * `facts` 由本服务从 `kb` 直接读取（见 `collectFacts`），**模型没有机会自报数字**——
+ * 这是门控真实性的关键：如果让模型填"我有 390 篇论文"，门控就形同虚设。
+ *
+ * 事实是**先采集、再判定**（core 的 `evaluate` 保持同步纯函数——纯逻辑层不该
+ * 变成异步接口，那会污染所有调用方与测试）。
+ *
+ * 阈值取 core 的 `DEFAULT_CRITERIA`（v1.2 §14 的 Phase 2 验收口径）；
+ * 阶段摘要仍然记录，但只作为呈递给人的上下文，不参与放行判定。
  */
-const DEFAULT_CRITERIA: GateCriteria = {
-  evaluate(state) {
-    const summary = state.stages[state.current_stage]?.summary
-    return summary !== undefined && summary.trim().length > 0
-      ? []
-      : [`阶段 ${state.current_stage} 未产出摘要——Phase 1 空流水线判据：提供非空摘要即视为完成（§9.3 判据后续按阶段配置化）`]
-  },
+function makeCriteria(facts: StageFacts): GateCriteria {
+  return { evaluate: (state) => evaluateCriteria(state, facts, DEFAULT_CRITERIA) }
 }
 
 /** 门控决议落盘后的返回。 */
@@ -130,6 +141,13 @@ export class ProjectStateService extends Service {
   private readonly store: ProjectStateStore
   private readonly config: ResolvedConfig
   private current: ProjectState | undefined
+  /**
+   * idea 生成/打分计数（内存态）。
+   *
+   * 为什么不落盘：它是**判据的辅助事实**，会话重启后归零只会让判据变严（要求重新生成），
+   * 不会误放行；把它写进状态文件反而会引入"计数与真实产物不一致"的风险。
+   */
+  private ideaStats: { generated: number; scored: number } | undefined
 
   constructor(ctx: Context, config: Config = {}) {
     super(ctx, 'projectState')
@@ -169,6 +187,89 @@ export class ProjectStateService extends Service {
     return fresh
   }
 
+  /**
+   * 落盘研究范围（P3-4）：细分领域 + 检索关键词。
+   *
+   * 语义：只覆盖传入的字段（不传 = 保持原值）。空串/空白视为"清空为 null"，
+   * 与 core 的 `setResearchScope` 同一套归一化。
+   */
+  async setScope(scope: { sub_domain?: string | null; keywords?: readonly string[] }): Promise<ProjectState> {
+    const state = await this.getOrCreateState()
+    const next = setResearchScope(state, scope)
+    await this.save(next)
+    return next
+  }
+
+  /**
+   * 采集阶段判据所需的**真实事实**（从 `kb` 直接读，不经模型）。
+   *
+   * `kb` 不可用（例如隔离 realm 里没装上）时返回全零——那会让判据全部不达标，
+   * 表现为"卡在知识阶段"，而不是静默放行。这个方向是刻意选的：门控宁可卡住，
+   * 也不能因为服务缺失而误放。
+   */
+  async collectFacts(): Promise<StageFacts> {
+    const kb = this.ctx.get('kb') as
+      | {
+        count(): number
+        parsedCount?(): number
+        extractionCount(): number
+        entrySummary(): { counts: Record<string, number> }
+      }
+      | undefined
+    const experiments = await this.countConvergedExperiments()
+    const ideaFacts = this.ideaStats === undefined ? {} : { ideas_generated: this.ideaStats.generated, ideas_scored: this.ideaStats.scored }
+    if (kb === undefined) {
+      return { papers: 0, parsed: 0, extractions: 0, entries: {}, experiments, ...ideaFacts }
+    }
+    const parsed = typeof kb.parsedCount === 'function' ? kb.parsedCount() : 0
+    return {
+      papers: kb.count(),
+      parsed,
+      extractions: kb.extractionCount(),
+      entries: { ...kb.entrySummary().counts },
+      experiments,
+      ...ideaFacts,
+    }
+  }
+
+  /**
+   * 已收敛实验数：`experiments/<id>/RESULTS.md` 存在的目录数（归档原则 §2）。
+   *
+   * 为什么用"有 RESULTS.md"当收敛判据而不是目录存在：目录可以随手建，
+   * 结论必须写下来才算收敛——这也让判据与 `check-experiment.mjs` 的口径一致。
+   *
+   * 注：注释里不要写 `experiments/星号/RESULTS.md` 这种通配路径——`星号/` 会
+   * 提前关闭块注释，后面的正文会被当成代码解析（本文件踩过一次）。
+   */
+  private async countConvergedExperiments(): Promise<number> {
+    const dir = this.config.experimentsDir
+    try {
+      const entries = await readdir(resolve(dir), { withFileTypes: true })
+      let count = 0
+      for (const entry of entries) {
+        if (!entry.isDirectory() || entry.name.startsWith('_')) continue
+        try {
+          await access(resolve(dir, entry.name, 'RESULTS.md'), constants.F_OK)
+          count += 1
+        } catch {
+          // 没有 RESULTS.md：算未收敛
+        }
+      }
+      return count
+    } catch {
+      // 目录不存在 = 还没做实验（0），不是错误
+      return 0
+    }
+  }
+
+  /** 记录 idea 生成/打分的计数（由 idea 族工具调用；供 `idea_generation` 判据使用）。 */
+  async noteIdeaActivity(kind: 'generated' | 'scored', count: number): Promise<void> {
+    const current = this.ideaStats ?? { generated: 0, scored: 0 }
+    this.ideaStats = kind === 'generated'
+      ? { ...current, generated: current.generated + count }
+      : { ...current, scored: current.scored + count }
+  }
+
   private async save(state: ProjectState): Promise<void> {
     await this.store.save(state)
     this.current = state
@@ -189,7 +290,8 @@ export class ProjectStateService extends Service {
         [stage]: { ...previous, status: 'in_progress' as const, summary },
       },
     }
-    const decision = requestGate(staged, DEFAULT_CRITERIA, now, summary)
+    const facts = await this.collectFacts()
+    const decision = await requestGate(staged, makeCriteria(facts), now, summary)
     const persisted: ProjectState = decision.gate === null ? staged : { ...staged, pending_gate: decision.gate }
     await this.save(persisted)
     return decision

@@ -60,13 +60,50 @@ export function apply(ctx: Context): void {
   }))
 
   toolsRuntime.register(defineTool({
+    name: STATE_TOOLS.scopeSet,
+    description:
+      '落盘研究范围（细分领域 + 检索关键词组）。这是**与用户对话后的产物**：'
+      + '先用 ask_user_question 收敛细分领域，再调本工具写入状态；'
+      + 'Scout 检索（cvagent_kb_scout）缺省就读这里的范围。'
+      + '只覆盖传入的字段：不传即保持原值，传空串表示清空。',
+    parameters: {
+      sub_domain: { type: 'string', description: '细分领域一句话（如「音频深度伪造检测」）' },
+      keywords: { type: 'array', items: { type: 'string' }, description: '检索关键词组（建议 3–8 个，覆盖同义表述与英文术语）' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          sub_domain: { type: 'string', required: true, description: '落盘后的细分领域；未设置时为空串' },
+          keywords: { type: 'array', required: true, items: { type: 'string' } },
+          scope_ready: { type: 'boolean', required: true, description: 'false 表示细分领域仍为空（知识阶段不会放行）' },
+        },
+      },
+      render: renderJson,
+    },
+    async execute(args) {
+      const next = await service.setScope({
+        ...(args.sub_domain === undefined ? {} : { sub_domain: String(args.sub_domain) }),
+        ...(args.keywords === undefined ? {} : { keywords: args.keywords.map((item) => String(item)) }),
+      })
+      return {
+        sub_domain: next.sub_domain ?? '',
+        keywords: [...next.keywords],
+        scope_ready: next.sub_domain !== null,
+      }
+    },
+  }))
+
+  toolsRuntime.register(defineTool({
     name: STATE_TOOLS.advance,
     description:
-      '请求推进当前阶段（三段式门控第 ① 步）：记录阶段完成摘要并校验完成判据。'
-      + '达标则写入待决门控——A 模式先经 ask_user_question 询问用户，B/C 模式可直接调用 cvagent_gate_resolve；'
-      + '未达标返回缺失项清单。',
+      '请求推进当前阶段（三段式门控第 ① 步）：记录阶段完成摘要并校验**真实数字判据**。'
+      + '判据从知识库直接读取（论文数/解析数/提取数/四库条目数），**不是模型自报**；'
+      + '达标则写入待决门控——confirm 模式先经 ask_user_question 询问用户，其它模式可直接 cvagent_gate_resolve；'
+      + '未达标返回缺失项清单（含「当前/要求」两个数字），照单补齐即可。',
     parameters: {
-      summary: { type: 'string', required: true, description: '本阶段完成情况摘要（Phase 1 判据：非空摘要即完成）' },
+      summary: { type: 'string', required: true, description: '本阶段完成情况摘要（给人看的上下文；判据不看摘要，看真实数字）' },
     },
     output: {
       schema: {
@@ -75,8 +112,9 @@ export function apply(ctx: Context): void {
         properties: {
           stage: { type: 'string', required: true, description: '判定的阶段' },
           satisfied: { type: 'boolean', required: true, description: '完成判据是否全部满足' },
-          missing: { type: 'array', items: { type: 'string' }, required: true, description: '未满足的判据清单' },
+          missing: { type: 'array', items: { type: 'string' }, required: true, description: '未满足的判据清单（含当前/要求）' },
           gate_requested: { type: 'boolean', required: true, description: '是否已写入待决门控（true 表示等待决议）' },
+          facts_json: { type: 'string', required: true, description: '本次判据依据的真实事实（JSON），便于核对与审计' },
         },
       },
       render: renderJson,
@@ -84,11 +122,13 @@ export function apply(ctx: Context): void {
     async execute(args) {
       const decision = await service.requestStageGate(String(args.summary))
       const state = await service.getOrCreateState()
+      const facts = await service.collectFacts()
       return {
         stage: state.current_stage,
         satisfied: decision.satisfied,
         missing: [...decision.missing],
         gate_requested: decision.gate !== null,
+        facts_json: JSON.stringify({ ...facts, entries: { ...facts.entries }, sub_domain: state.sub_domain, keywords_count: state.keywords.length }),
       }
     },
   }))

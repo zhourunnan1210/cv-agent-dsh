@@ -44,6 +44,10 @@
       "types": "./lib/kb/entry-tools.d.ts",
       "default": "./lib/kb/entry-tools.js"
     },
+    "./kb-research": {
+      "types": "./lib/kb/research-tools.d.ts",
+      "default": "./lib/kb/research-tools.js"
+    },
     "./mineru-quota": {
       "types": "./lib/kb/mineru-quota-service.d.ts",
       "default": "./lib/kb/mineru-quota-service.js"

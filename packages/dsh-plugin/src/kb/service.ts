@@ -73,6 +73,8 @@ export interface KbApi {
   upsertPaper(record: PaperRecord): UpsertPaperOutcome
   getPaper(paperId: string): PaperRecord | undefined
   count(): number
+  /** 已解析全文的论文数（阶段判据用）。 */
+  parsedCount(): number
   countByChannel(): Record<string, number>
   saveExtraction(extraction: PaperExtraction): void
   getExtraction(paperId: string): PaperExtraction | undefined
@@ -108,6 +110,18 @@ export class KbService extends Service implements KbApi {
 
   count(): number {
     return this.library.count()
+  }
+
+  /**
+   * 已解析全文的论文数（`md_path` 非空）。
+   *
+   * 用途：阶段判据（`knowledge_building` 要求"已解析 ≥ N 篇"）。补这个方法之前，
+   * 判据里 `parsed` 永远是 0——门控会**永远无法达标**，而表面上一切正常。
+   */
+  parsedCount(): number {
+    return (this.database.raw
+      .prepare("SELECT COUNT(*) AS c FROM papers WHERE md_path IS NOT NULL AND md_path != ''")
+      .get() as { c: number }).c
   }
 
   countByChannel(): Record<string, number> {
