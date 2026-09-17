@@ -72,9 +72,14 @@
 - id: cvagent-project-group
   name: cordis:group
   group: true
+  # ⚠️ 每个**发布服务的行**都必须在这里有对应的键。漏一个，那行就会落到进程全局
+  # realm（勘误 §4.4 / E10）：另一个 preset 发布同名服务即冲突，宿主读者也会
+  # 解析到"所有会话共用的一个实例"。`scripts/check-preset.mjs` 会静态拦住这种漏项
+  # ——它在本 group 合并时就是这么抓到 `ideaScore` 漏声明的。
   isolate:
     projectState: true
     kb: true
+    ideaScore: true
   config:
     - id: cvagent-state
       name: cv-agent-dsh/state
