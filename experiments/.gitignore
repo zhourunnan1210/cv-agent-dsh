@@ -1,0 +1,12 @@
+# 实验产物：大文件不入库（归档原则 §2）
+#
+# 入库的：README / EVIDENCE / RESULTS / config / code / runs/*/{cmd.txt,env.txt,stdout.log,metrics.json}
+# 不入库的：checkpoint、大数据集、生成的图（可外链或另存对象存储）
+**/runs/*/artifacts/*
+!**/runs/*/artifacts/.gitkeep
+*.ckpt
+*.pth
+*.pt
+*.safetensors
+*.onnx
+*.zip

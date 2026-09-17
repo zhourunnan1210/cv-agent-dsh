@@ -1067,6 +1067,72 @@ embedding 到位后同一套契约自动升级到 `vector` 模式。embedding �
 
 ---
 
+## 12. 需求细化（二）：检索 / 三库 / Idea / 实验四段的现状与设计（2026-09-17）
+
+用户按四段提出细化需求，并要求「先讲现在怎么实现的」。以下逐条对齐**事实**（截至 commit `16aab6c`）。
+
+### 12.1 现状对照
+
+| 段 | 已有 | 缺什么 |
+| --- | --- | --- |
+| **(1) 检索文章**：对话定细分领域 → 提关键词 → 检索 | Asta 8 工具真实可用（P2-7 实测取回 244 篇）；`SCOUT_ALLOWED_TOOLS` 白名单已声明；pack 的 `lexicon`（15 术语 + **8 组 `query_expansion` 检索改写**）就是"关键词扩展"的载体；入库工具 `cvagent_kb_import_paper`（三级去重）已实现 | ① **Scout 委派工具**（白名单声明了但没有工具去 spawn Scout）；② **"对话定细分领域"的流程**（persona 未写、状态机无 `sub_domain` 字段）；③ 关键词→检索→入库的编排（当前由脚本 `asta-control.mjs` 承担，不是会话内能力） |
+| **(2) 提取三库**：结合论文库准确提取归纳 | Reader 提取工具 `cvagent_kb_extract`（20 篇真实跑通 + 6 条契约测试）；三库读写工具 `upsert_entry/search/summary`；三库检索 FTS5+LIKE；Analyst 归纳**已跑通但只是脚本流程**（digest 文件 → 子代理 → `load-entries.mjs`） | **Analyst 委派工具**（把"从提取归纳出条目 + 与既有三库去重"变成会话内能力）；失败方法库（见 12.2） |
+| **(3) 提出 Idea + 失败库复查 + 打分** | **只有 P3-3a 的确定性打分骨架**（相似度标定、证据派生、裁判判定应用、加权聚合、报告可复算）+ 契约 + 用户选定的三条口径（§11.1） | **idea 生成本身一行代码都没有**；失败方法库；打分工具与裁判委派 |
+| **(4) 实验组织** | 状态机 experiment 阶段占位；`AuthorizedAction` 四类受限动作；服务平面裁定（原定 `expOrchestrator` 归宿主） | 归档原则（已交付，见 §12.4）；**原定的 `exp_plan/launch/status/collect` 四工具经用户裁定撤销** |
+
+> 一句话回答「idea 生成现在怎么实现的」：**没有实现**。已实现的只有「分数怎么算」的确定性部分，
+> 「idea 怎么被想出来」还是空白——因此下面 (3) 是真正要开工的地方。
+
+### 12.2 新增需求：**失败方法库**（第四库，需评审）
+
+用户要求：idea 提出后，**再过一遍本地一直维护的失败方法库**，然后才打分。设计要点：
+
+| 项 | 设计 |
+| --- | --- |
+| 存储 | 新增同构表 `failures`（`entry_id` = `F001…`）+ FTS5 trigram 索引（**迁移 v5**），与三库同形（statement / ext / source_papers / 时间戳） |
+| 内容 | 一条失败 = 「某个做法在某个条件下不成立」。statement 写"做法 → 失败表现"，例：*「在 FF++ c23 上只做频域分支替换主干：跨库 AUC 不升反降（DFDC −1.8）」* |
+| `ext` 字段 | `failure_mode` ∈ `method_invalid` / `data_issue` / `metric_not_improved` / `resource_infeasible` / `reproducibility`；`conditions`（成立条件）；`evidence`（`paper:<id>` 或 `exp:<exp_id>`）；`revisit_when`（什么条件下值得再试） |
+| 来源（三条，按可靠性排序） | ① **我们的实验负面结论**（`experiments/*/RESULTS.md` 的负面结论段 → 回流，归档原则 §3 规则 2 已规定）；② **论文的 limitations / 负面对比结果**（Reader 已经在提 `limitations`——21 篇提取里现成有 ~60 条，可作种子）；③ 人工录入 |
+| 用途（关键语义） | idea 生成后 → **强制复查闸**：候选 idea 与 failures 检索 + 裁判判定 → 命中则**不是直接丢弃**，而是要求写明「为什么这次不一样」（`revisit_when` 对照），再进入打分。理由：失败条件是会变的（换数据集/换主干/算力变化），一刀切丢弃会扼杀正确想法 |
+| 与打分的关系 | 复查结论进入 `ScoringReport.evidence`（`source: 'failures'`），并在 `risk_level` 上体现；权重不变 |
+
+**待用户裁定的一点**：Domain Pack 是**现在就冻结 0.1**（不含 failures 段），还是**等失败库 schema 落定后一起冻结进 0.1**？
+（前者可以让打分先跑；后者避免 pack 马上要升 0.2。我的建议：先把失败库 schema 定下来，一起冻结 0.1。）
+
+### 12.3 检索段的补全（对应 (1)）
+
+| 交付物 | 内容 |
+| --- | --- |
+| 状态字段 | `ProjectState` 增 `sub_domain`（细分领域一句话）+ `keywords`（关键词组），由**对话确定后落盘**（与 §4.3 门控同一套持久化） |
+| 对话流程 | Orchestrator 用 `ask_user_question` 与用户收敛细分领域 → 用 pack 的 `lexicon.query_expansion` 展开关键词 → 落盘 `sub_domain`/`keywords` |
+| Scout 委派工具 | `cvagent_kb_scout`：spawn Scout 子代理（`toolFilter = SCOUT_ALLOWED_TOOLS`，outputSchema = 候选论文列表：title/ids/year/venue/相关性一句），返回后由主 Agent 调 `cvagent_kb_import_paper` 入库（保持检索与写入职责分离） |
+| 判据 | `knowledge_building` 阶段的完成判据从「非空摘要」升级为：论文库 ≥ N、三库条目 ≥ M、抽检通过（当前判据是 Phase 1 占位，见 `state/tools.ts`） |
+
+### 12.4 实验段：决策变更（对应 (4)）
+
+**用户裁定**：不写实验编排服务；只写「文件组织归档原则」，把设计与执行交给 dsh（它本身就是
+coding harness agent），我们只提供上下文/项目背景。
+
+- **撤销**：`IDEA_TOOLS` 里的 `exp_plan` / `exp_launch` / `exp_status` / `exp_collect` 四个工具名
+  与「`expOrchestrator` 宿主服务」的既有计划（§4.4.1 的服务平面裁定的对应条目作废，其余不动）。
+- **保留**：§4.6 的授权门（GPU 实例 / 计费 API / 破坏性操作仍须主 Agent 在委派前取得授权，E15 不变）。
+- **交付**：`docs/实验归档与组织原则.md`（目录结构 / 命名 / 三条硬规则 / 与状态机衔接 / 最小上下文包）
+  + `scripts/check-experiment.mjs`（**只读校验**：README 必备小节、每个 run 的 `cmd/env/metrics` 三件套、
+  RESULTS 负面结论小节、EVIDENCE 每行可溯源、INDEX 登记）
+  + `experiments/`（`INDEX.md` + `_template/` + `.gitignore` 排除 checkpoint 等大产物）。
+- **为什么不校验就等于没有**：原则若无校验脚本，就只是愿望；`--all` 已实测能对缺件目录报 FAIL。
+
+### 12.5 需要用户评审的事项（怎么看、看什么、怎么判）
+
+| # | 事项 | 看哪里 | 判断标准 | 通过后我的动作 |
+| --- | --- | --- | --- | --- |
+| 1 | **失败方法库 schema（迁移 v5）** | §12.2 的表；重点是 `failure_mode` 枚举与「命中不丢弃、要求写为什么这次不一样」这条语义 | ① `failure_mode` 五类是否覆盖你关心的失败形态；② 是否同意"复查而非丢弃"；③ 是否同意三条来源（我们的实验 / 论文 limitations / 人工） | 写迁移 v5 + FTS5 + `TriLibrary` 扩展 + 从 21 篇提取的 `limitations` 派生种子条目 |
+| 2 | **Domain Pack 冻结**（先并入失败库再冻，还是先冻 0.1） | `data/packs/deepfake-detection-0.1.draft.json`；命令 `node scripts/review-pack.mjs`（要点视图）与 `--dry-run`（契约校验） | 三处：**enum 词表**（决定 Analyst 取值空间）、**benchmarks 纳入/排除清单**（`provenance` 段有两组全量）、**权重 30/30/25/15 与档位、按模式的阈值**（keyword 模式 0.10/0.30 是实测标定值） | `node scripts/freeze-pack.mjs --reviewer "<你的标识>" --bind` |
+| 3 | **实验归档原则** | `docs/实验归档与组织原则.md`：§2 目录结构、§3 三条硬规则、§5 校验项 | ① 目录/命名是否够用且不啰嗦；② 三条硬规则（数字溯源 / 失败也归档 / 可原地重跑）是否同意；③ 校验项是否要增删 | 把该约定接进 preset 的 prompt 章节（让会话里的 agent 知道去哪找、必须交什么） |
+| 4 | **P3-3b 工具行为**（生成/打分/复查） | 尚未实现；实现后看 `tests/` 的契约测试 + 一次真实小规模跑（建议 2 视角 × 2 条 = 4 个候选） | ① N 视角的取法（我建议：视角 = 冻结 pack 的 `problems` × 方法范式，每视角产出 k 条）；② 失败库复查的判定标准；③ 是否接受 `keyword_only` 模式下的打分（语义撞车全靠裁判） | 实现 `ideaScore` 服务 + 三个工具（scout/analyst 之外）并给出真实跑批报告 |
+
+---
+
 ## 附录 A：本次已落地的仓库产物
 
 
