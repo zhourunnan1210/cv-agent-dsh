@@ -8,6 +8,7 @@
  * @module @cv-research/core
  */
 
+export * from './granularity.js'
 export * from './schema/kb.js'
 export * from './schema/paper.js'
 export * from './schema/extraction.js'

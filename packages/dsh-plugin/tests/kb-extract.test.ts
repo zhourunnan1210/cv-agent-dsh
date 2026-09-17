@@ -16,6 +16,8 @@ import { join } from 'node:path'
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
 
+import { EXTRACTION_FIELDS } from '@cv-research/core'
+
 import { KbService } from '../lib/kb/service.js'
 import * as extractTool from '../lib/kb/extract-tool.js'
 
@@ -341,10 +343,14 @@ describe('cvagent_kb_extract（Reader 子代理委派，假 subagents）', () =>
 
   it('outputSchema 是 PaperExtraction 契约的编译', () => {
     const schema = extractTool.extractionOutputSchema()
-    expect(schema.required).toEqual([
-      'problem_statement', 'method_summary', 'innovations', 'future_work',
-      'limitations', 'benchmarks', 'metrics', 'baseline_methods', 'extraction_quality',
-    ])
+    // 断言与**契约常量同源**（`EXTRACTION_FIELDS`），不写死字段清单——
+    // 写死的话每加一个字段（如 method_modules）测试就红，而红的原因不是产品坏了，
+    // 是测试自己不会跟随（本项目已反复踩过：E33 的 toBe(0)、迁移版本号的 [1,2,3,4,5]）。
+    expect(schema.required).toEqual([...EXTRACTION_FIELDS])
     expect(schema.properties.extraction_quality.enum).toEqual(['full_text', 'abstract_only'])
+    // 每个契约字段都要在 schema 里有定义（否则 additionalProperties:false 会把它拒掉）
+    for (const field of EXTRACTION_FIELDS) {
+      expect(schema.properties[field], `契约字段 ${field} 在 outputSchema 里没有定义`).toBeDefined()
+    }
   })
 })

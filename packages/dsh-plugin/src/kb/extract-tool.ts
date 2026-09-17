@@ -24,7 +24,8 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-tools'
 import { resolve } from 'node:path'
 
-import type { PaperExtraction, ExtractionQuality } from '@cv-research/core'
+import { GRANULARITY, checkGranularityBatch, describeViolation } from '@cv-research/core'
+import type { PaperExtraction, ExtractionQuality, MethodModule } from '@cv-research/core'
 
 import { KB_TOOLS } from '../tools/names.js'
 import type { KbService } from './service.js'
@@ -42,10 +43,14 @@ export const READER_PERSONA = [
   '你是 cv-research 的 Reader 子代理：一次只处理一篇论文的结构化提取。',
   '读入指定路径的论文全文 Markdown（可能含 MinerU 解析噪声，如 OCR 错字），',
   '按给定 outputSchema 提取十字段：problem_statement（摘要+引言）、',
-  'method_summary（方法章节）、innovations（引言+结论的创新点列表）、',
+  'method_summary（方法章节）、method_modules（**把方法拆成 3–6 个组成模块**）、',
+  'innovations（引言+结论的创新点列表）、',
   'future_work（结论+讨论；没有就空数组）、limitations（局限章节+批判性分析，',
   '包括负面对比结果）、benchmarks（实验用数据集名）、metrics（报告指标名）、',
   'baseline_methods（对比方法名）、extraction_quality。',
+  '⚠️ `method_modules` 是**方法的组成拆解**，不是创新点：每个模块写清「名字 / 在整体里干什么 /',
+  '输入是什么、做了什么操作、起什么作用」。标准件（主干网络、常规训练策略）也要算作模块——',
+  '撞车要问的是"这个模块库里有没有人做过"，不是"它新不新"。',
   '⚠️ `benchmarks` 只填**数据集/基准**的名称（如 FaceForensics++、Celeb-DF、GenImage）。',
   '伪造方法或生成器（FaceSwap、Face2Face、NeuralTextures、StyleGAN3、SDv21…）不是数据集，',
   '不要放进 benchmarks——它们属于方法/生成器；源语料（VoxCeleb2、LRS2）可以填。',
@@ -60,21 +65,61 @@ export function extractionOutputSchema() {
     additionalProperties: false,
     properties: {
       paper_id: { type: 'string' },
-      problem_statement: { type: 'string' },
-      method_summary: { type: 'string' },
-      innovations: { type: 'array', items: { type: 'string' } },
+      problem_statement: { type: 'string', description: `问题陈述：${GRANULARITY.problem.min}–${GRANULARITY.problem.max} 字（${GRANULARITY.problem.requirement}）` },
+      method_summary: { type: 'string', description: `方法整体叙述：${GRANULARITY.method.min}–${GRANULARITY.method.max} 字（${GRANULARITY.method.requirement}）` },
+      method_modules: {
+        type: 'array',
+        description: '方法的**组成**拆解（3–6 个）。撞车的对齐单元——问"这个模块库里有没有人做过"，不判断新旧。',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            name: { type: 'string', description: '可命名的模块名（如「频域一致性约束」）' },
+            role: { type: 'string', description: '一句话：它在整体方法里干什么' },
+            description: { type: 'string', description: `输入/操作/作用：${GRANULARITY.module_description.min}–${GRANULARITY.module_description.max} 字` },
+            kind: {
+              type: 'string',
+              enum: ['backbone', 'module', 'loss', 'training_strategy', 'dataset', 'protocol', 'other'],
+            },
+          },
+          required: ['name', 'role', 'description', 'kind'],
+        },
+      },
+      innovations: { type: 'array', items: { type: 'string' }, description: `每条 ${GRANULARITY.innovation.min}–${GRANULARITY.innovation.max} 字，必须能命名到模块/损失/数据集/协议` },
       future_work: { type: 'array', items: { type: 'string' } },
-      limitations: { type: 'array', items: { type: 'string' } },
+      limitations: { type: 'array', items: { type: 'string' }, description: `每条 ${GRANULARITY.limitation.min}–${GRANULARITY.limitation.max} 字，尽量带数字` },
       benchmarks: { type: 'array', items: { type: 'string' } },
       metrics: { type: 'array', items: { type: 'string' } },
       baseline_methods: { type: 'array', items: { type: 'string' } },
       extraction_quality: { type: 'string', enum: ['full_text', 'abstract_only'] },
     },
     required: [
-      'problem_statement', 'method_summary', 'innovations', 'future_work',
+      'problem_statement', 'method_summary', 'method_modules', 'innovations', 'future_work',
       'limitations', 'benchmarks', 'metrics', 'baseline_methods', 'extraction_quality',
     ],
   }
+}
+
+/** 方法模块的宽松形状校验：名字与描述缺一不可，kind 非法回落到 other。 */
+function coerceModules(value: unknown): MethodModule[] {
+  if (!Array.isArray(value)) return []
+  const kinds: MethodModule['kind'][] = ['backbone', 'module', 'loss', 'training_strategy', 'dataset', 'protocol', 'other']
+  return value
+    .map((item): MethodModule | undefined => {
+      if (typeof item !== 'object' || item === null) return undefined
+      const raw = item as Record<string, unknown>
+      const name = typeof raw.name === 'string' ? raw.name.trim() : ''
+      const description = typeof raw.description === 'string' ? raw.description.trim() : ''
+      if (name === '' || description === '') return undefined
+      const kind = kinds.find((candidate) => candidate === raw.kind) ?? 'other'
+      return {
+        name,
+        role: typeof raw.role === 'string' ? raw.role.trim() : '',
+        description,
+        kind,
+      }
+    })
+    .filter((module): module is MethodModule => module !== undefined)
 }
 
 /** 校验子代理返回的结构化结果是不是 PaperExtraction（宽松形状校验）。 */
@@ -84,10 +129,13 @@ function coerceExtraction(paperId: string, value: unknown): PaperExtraction | un
   const str = (key: string) => (typeof candidate[key] === 'string' ? (candidate[key] as string) : '')
   const arr = (key: string) => (Array.isArray(candidate[key]) ? (candidate[key] as unknown[]).map(String) : [])
   if (str('problem_statement') === '' || str('method_summary') === '') return undefined
+  const modules = coerceModules(candidate.method_modules)
   return {
     paper_id: paperId,
     problem_statement: str('problem_statement'),
     method_summary: str('method_summary'),
+    // 空数组表示"这次提取没给出模块"——不写该字段，让调用方按"缺字段"处理
+    ...(modules.length === 0 ? {} : { method_modules: modules }),
     innovations: arr('innovations'),
     future_work: arr('future_work'),
     limitations: arr('limitations'),
@@ -115,6 +163,10 @@ interface ExtractResult {
   status: 'ok' | 'failed'
   extraction_quality?: string
   summary?: string
+  /** 本次提取汇入模块清单的模块数（新契约下 3–6）。 */
+  modules?: number
+  /** 粒度自检结果（不合规不阻断，但必须让人看见）。 */
+  granularity_notes?: string[]
   error?: string
 }
 
@@ -157,6 +209,12 @@ export function apply(ctx: Context): void {
                 status: { type: 'string', required: true, enum: ['ok', 'failed'] },
                 extraction_quality: { type: 'string', description: '成功时为 full_text / abstract_only' },
                 summary: { type: 'string', description: '成功时的一句话摘要（问题｜方法）' },
+                modules: { type: 'integer', description: '成功时：本次汇入模块清单的模块数（新契约下 3–6）' },
+                granularity_notes: {
+                  type: 'array',
+                  items: { type: 'string' },
+                  description: '粒度自检偏差（如「method_summary：320 字（要求 500–800 字，过短）」）。不合规不阻断提取，但必须让人看见。',
+                },
                 error: { type: 'string', description: '失败时的原因（该篇独立失败，不影响其余）' },
               },
             },
@@ -240,12 +298,36 @@ export function apply(ctx: Context): void {
             throw new Error('Reader 返回的结构化结果形状非法（缺 problem_statement 或 method_summary）')
           }
           kb.saveExtraction(extraction)
+          // **粒度自检**：不合规不阻断（提取结果是真事实，格式问题不该让人重跑一次
+          // 昂贵的提取），但必须报出来——否则"方法写得太短"会安静地毁掉下游的撞车对齐。
+          const violations = checkGranularityBatch([
+            { field: 'problem', text: extraction.problem_statement, label: 'problem_statement' },
+            { field: 'method', text: extraction.method_summary, label: 'method_summary' },
+            ...(extraction.method_modules ?? []).map((module, index) => ({
+              field: 'module_description' as const,
+              text: module.description,
+              label: `模块 ${index + 1}「${module.name}」的描述`,
+            })),
+          ])
+          // **模块清单持续汇入**（设计 §3.5）：提取出的方法模块直接进模块库，
+          // 不再需要单独一轮委派。这是"论文越提取、模块清单越全"的机制。
+          const registered = (extraction.method_modules ?? []).map((module) =>
+            kb.upsertModule({
+              name: module.name,
+              statement: module.description,
+              kinds: [module.kind],
+              paper_id: extraction.paper_id,
+              ext: { from: 'extraction', role: module.role },
+            }),
+          )
           results.push({
             paper_id: target.paper_id,
             title: target.title,
             status: 'ok',
             extraction_quality: extraction.extraction_quality,
             summary: `${extraction.problem_statement.slice(0, 80)}｜${extraction.method_summary.slice(0, 80)}`,
+            modules: registered.length,
+            granularity_notes: violations.map(describeViolation),
           })
         } catch (error) {
           results.push({

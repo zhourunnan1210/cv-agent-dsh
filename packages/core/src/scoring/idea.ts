@@ -9,18 +9,68 @@
  */
 
 import type { KnowledgeBase } from '../schema/kb.js'
+import type { MethodModule, MethodModuleKind } from '../schema/extraction.js'
+
+/**
+ * Idea 的一个组成模块——**与论文侧 `MethodModule` 同构**。
+ *
+ * 同构是刻意的：撞车就是拿 idea 的模块逐条去比库里的模块，两边的字段含义必须一致，
+ * 否则"对齐"无从谈起（整合设计 v1.0 §2 的核心原则：四层共用一套结构）。
+ * 差异只有一处：idea 侧多一个 `expected_advantage`——它要说明"这个模块凭什么更好"，
+ * 而论文侧不需要（论文已经有实验结果了）。
+ */
+export interface IdeaModule extends MethodModule {
+  /** 预期优势：这个模块凭什么比现有做法好。 */
+  readonly expected_advantage: string
+}
+
+/** Idea 的一条创新点（比 `innovation` 汇总串更结构化，便于逐条比对与归档）。 */
+export interface IdeaInnovation {
+  readonly statement: string
+  readonly kind: 'new_method' | 'new_framework' | 'new_loss' | 'new_dataset' | 'new_benchmark' | 'new_insight' | 'other'
+  /** 对应哪个模块（模块名）。 */
+  readonly related_module?: string
+}
+
+export type { MethodModuleKind }
 
 /** 候选 Idea（v1.2 §10）。 */
-export interface IdeaCandidate {
-  readonly idea_id: string
+export interface IdeaCandidate {  readonly idea_id: string
+  /** 一句话标题（整合设计 v1.0：与库侧论文标题同粒度，便于人工扫读）。 */
+  readonly title?: string
   /** 一句话描述。 */
   readonly statement: string
   /** 问题侧描述，用于向量检索问题库。 */
   readonly problem: string
   /** 方法侧描述，用于向量检索方法库。 */
   readonly method: string
+  /**
+   * 方法组成模块（整合设计 v1.0 新增）——**与论文侧的 `method_modules` 同构**。
+   *
+   * 撞车的对齐单元就是它：逐模块问"库里有没有人做过这个模块"。
+   * 没有它，撞车只能退回"整体像不像"（而那个判据已实测不可信）。
+   */
+  readonly method_modules?: readonly IdeaModule[]
   /** 预期创新点。 */
   readonly innovation: string
+  /** 逐条创新点（结构化版；与 `innovation` 并存，后者是给人读的汇总）。 */
+  readonly innovations?: readonly IdeaInnovation[]
+  /**
+   * 预期评测设定（整合设计 v1.0 新增）。
+   *
+   * 独立成结构而不是写进自由文本：评测专家要判断"这个设定库里有没有被覆盖过"，
+   * 需要能按基准/指标/协议逐项比对。
+   */
+  readonly evaluation?: {
+    readonly benchmarks: readonly string[]
+    readonly metrics: readonly string[]
+    readonly protocols: readonly string[]
+    readonly baselines: readonly string[]
+  }
+  /** 预期提升（尽量给可量化表述）。 */
+  readonly expected_gain?: string
+  /** 这条 idea 最可能怎么失败（2–4 条）。 */
+  readonly risks?: readonly string[]
   /** 建议的 1–3 篇 baseline 论文 ID。 */
   readonly baselines: readonly string[]
   /**

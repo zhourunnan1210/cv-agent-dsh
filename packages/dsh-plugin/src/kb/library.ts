@@ -10,6 +10,7 @@ import {
   dedupeMatch,
   mergePaperRecords,
   normalizePaperId,
+  type MethodModule,
   type PaperExtraction,
   type PaperRecord,
 } from '@cv-research/core'
@@ -38,6 +39,8 @@ interface PaperExtractionRow {
   paper_id: string
   problem_statement: string
   method_summary: string
+  /** 迁移 v8 追加；旧行为 `'[]'`（读回时按"该字段不存在"处理）。 */
+  method_modules?: string
   innovations: string
   future_work: string
   limitations: string
@@ -46,6 +49,19 @@ interface PaperExtractionRow {
   baseline_methods: string
   extraction_quality: 'full_text' | 'abstract_only'
   extracted_at: string
+}
+
+/**
+ * 解析 `method_modules` 列：**空数组视为"该字段不存在"**。
+ *
+ * 为什么这么区分：迁移 v8 给旧行填 `'[]'`，而"这份提取早于该字段"与
+ * "提取了但一个模块都没有"是两件事——前者要靠 `innovations` 兜底派生模块清单，
+ * 后者说明 Reader 按要求返回了空列表。把它们混成一个空数组，调用方就无从判断。
+ */
+function parseMethodModules(raw: string | undefined): MethodModule[] | undefined {
+  if (raw === undefined) return undefined
+  const parsed = JSON.parse(raw) as MethodModule[]
+  return parsed.length === 0 ? undefined : parsed
 }
 
 /** 行 ↔ 记录互转。 */
@@ -232,15 +248,16 @@ export class PaperLibrary {
     this.db.raw
       .prepare(`
         INSERT INTO paper_extractions (
-          paper_id, problem_statement, method_summary, innovations, future_work,
+          paper_id, problem_statement, method_summary, method_modules, innovations, future_work,
           limitations, benchmark, metrics, baseline_methods, extraction_quality, extracted_at
         ) VALUES (
-          @paper_id, @problem_statement, @method_summary, @innovations, @future_work,
+          @paper_id, @problem_statement, @method_summary, @method_modules, @innovations, @future_work,
           @limitations, @benchmark, @metrics, @baseline_methods, @extraction_quality, @extracted_at
         )
         ON CONFLICT(paper_id) DO UPDATE SET
           problem_statement = excluded.problem_statement,
           method_summary = excluded.method_summary,
+          method_modules = excluded.method_modules,
           innovations = excluded.innovations,
           future_work = excluded.future_work,
           limitations = excluded.limitations,
@@ -254,6 +271,7 @@ export class PaperLibrary {
         paper_id: extraction.paper_id,
         problem_statement: extraction.problem_statement,
         method_summary: extraction.method_summary,
+        method_modules: JSON.stringify(extraction.method_modules ?? []),
         innovations: JSON.stringify(extraction.innovations),
         future_work: JSON.stringify(extraction.future_work),
         limitations: JSON.stringify(extraction.limitations),
@@ -278,6 +296,9 @@ export class PaperLibrary {
       paper_id: row.paper_id,
       problem_statement: row.problem_statement,
       method_summary: row.method_summary,
+      ...(parseMethodModules(row.method_modules) === undefined
+        ? {}
+        : { method_modules: parseMethodModules(row.method_modules) as MethodModule[] }),
       innovations: JSON.parse(row.innovations) as string[],
       future_work: JSON.parse(row.future_work) as string[],
       limitations: JSON.parse(row.limitations) as string[],

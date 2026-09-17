@@ -347,6 +347,23 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_module_sources_module ON module_sources(module_id);
     `,
   },
+  {
+    /**
+     * L2 提取新增 `method_modules`（整合设计 v1.0 §3.2 的粒度契约）。
+     *
+     * 存 JSON 数组而不是单开一张表：模块是**一次提取的组成部分**，生命周期与提取一致
+     * （重提取即整体覆盖），不存在跨行查询的需求。真正需要独立成表的是**跨论文的机制族**
+     * ——那已经是 `modules`（迁移 v7）。
+     *
+     * 旧行填 `'[]'`：设计 §10 开放项 4 裁定**不重提取**那 21 篇，它们的模块清单
+     * 由 `innovations` 派生（`scripts/seed-modules.mjs` 已做）。读回时空数组按
+     * "该字段不存在"处理，见 `library.ts#parseMethodModules`。
+     */
+    version: 8,
+    up: `
+      ALTER TABLE paper_extractions ADD COLUMN method_modules TEXT NOT NULL DEFAULT '[]';
+    `,
+  },
 ]
 
 /** papers 表与三库+失败库的 SQLite 行形态。 */

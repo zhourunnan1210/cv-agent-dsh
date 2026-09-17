@@ -15,7 +15,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-tools'
 
-import { normalizeTitle, type IdeaCandidate } from '@cv-research/core'
+import { GRANULARITY, normalizeTitle, renderGranularityPrompt, type IdeaCandidate } from '@cv-research/core'
 
 import { IDEA_TOOLS } from '../tools/names.js'
 import type { IdeaScoreService } from './service.js'
@@ -82,13 +82,59 @@ export function ideaOutputSchema() {
           type: 'object',
           additionalProperties: false,
           properties: {
-            statement: { type: 'string' },
-            problem: { type: 'string' },
-            method: { type: 'string' },
-            innovation: { type: 'string' },
+            title: { type: 'string', description: '一句话标题' },
+            statement: { type: 'string', description: `一句话说清这个想法（${GRANULARITY.problem.min}–${GRANULARITY.problem.max} 字）` },
+            problem: { type: 'string', description: `它要解决什么问题：${GRANULARITY.problem.min}–${GRANULARITY.problem.max} 字（${GRANULARITY.problem.requirement}）` },
+            method: { type: 'string', description: `方法整体叙述：${GRANULARITY.method.min}–${GRANULARITY.method.max} 字（${GRANULARITY.method.requirement}）` },
+            // ★ 与论文侧 method_modules 同构：撞车的对齐单元
+            method_modules: {
+              type: 'array',
+              description: '方法的组成拆解（3–6 个）——与论文库的模块清单**逐条对齐**用',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  name: { type: 'string', description: '可命名的模块名' },
+                  role: { type: 'string', description: '一句话：它在整体里干什么' },
+                  description: { type: 'string', description: `输入/操作/作用：${GRANULARITY.module_description.min}–${GRANULARITY.module_description.max} 字` },
+                  kind: { type: 'string', enum: ['backbone', 'module', 'loss', 'training_strategy', 'dataset', 'protocol', 'other'] },
+                  expected_advantage: { type: 'string', description: '这个模块凭什么比现有做法好' },
+                },
+                required: ['name', 'role', 'description', 'kind', 'expected_advantage'],
+              },
+            },
+            innovation: { type: 'string', description: '创新点汇总（给人读的）' },
+            innovations: {
+              type: 'array',
+              description: '逐条创新点（结构化，便于归档）',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  statement: { type: 'string', description: `${GRANULARITY.innovation.min}–${GRANULARITY.innovation.max} 字` },
+                  kind: { type: 'string', enum: ['new_method', 'new_framework', 'new_loss', 'new_dataset', 'new_benchmark', 'new_insight', 'other'] },
+                  related_module: { type: 'string', description: '对应哪个模块（模块名）' },
+                },
+                required: ['statement', 'kind'],
+              },
+            },
+            evaluation: {
+              type: 'object',
+              additionalProperties: false,
+              description: '预期评测设定（评测专家要逐项比对库里有没有覆盖过）',
+              properties: {
+                benchmarks: { type: 'array', items: { type: 'string' } },
+                metrics: { type: 'array', items: { type: 'string' } },
+                protocols: { type: 'array', items: { type: 'string' } },
+                baselines: { type: 'array', items: { type: 'string' } },
+              },
+              required: ['benchmarks', 'metrics', 'protocols', 'baselines'],
+            },
+            expected_gain: { type: 'string', description: '预期提升（尽量可量化）' },
+            risks: { type: 'array', items: { type: 'string' }, description: '这条 idea 最可能怎么失败（2–4 条）' },
             baselines: { type: 'array', items: { type: 'string' } },
           },
-          required: ['statement', 'problem', 'method', 'innovation', 'baselines'],
+          required: ['title', 'statement', 'problem', 'method', 'method_modules', 'innovation', 'baselines'],
         },
       },
     },
@@ -247,9 +293,14 @@ export function apply(ctx: Context): void {
           options(args.sub_domain),
           `【你的视角】${lens}`,
           `请基于该视角提出 ${ideasPerLens} 条候选 idea。先用 cvagent_kb_search 查看：`,
-          '- 该问题下的 methods（已有哪些做法）与 innovations（已有哪些机制）——避免重复；',
+          '- 该问题下的 methods（已有哪些做法）与 **modules（已有哪些模块）**——避免重复；',
           '- failures（失败方法库）——避免已被否定的做法；',
           `然后用 cvagent_kb_summary 确认库的规模。最后按 outputSchema 输出。`,
+          '',
+          '【粒度要求】idea 会被拿去和论文库逐字段比对，**太短就比不了**，所以每个字段都要写足：',
+          renderGranularityPrompt(['problem', 'method', 'module_description', 'innovation']),
+          '其中 `method_modules` 必须把方法拆成 3–6 个模块（每个模块要有名字、在整体里的作用、',
+          '以及"输入是什么/做了什么/起什么作用"的一段描述）——它是撞车比对的**对齐单元**。',
         ].filter((line) => line !== '').join('\n')
 
         let produced = 0
