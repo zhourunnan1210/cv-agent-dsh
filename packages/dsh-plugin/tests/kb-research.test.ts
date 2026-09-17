@@ -2,8 +2,9 @@
  * 研究流程工具测试（P3-4）：真实 ToolRuntime + 假 subagents 提供者。
  *
  * 覆盖：
- * - `cvagent_kb_scout`：委派契约（只给 Asta 检索工具、不含 snippet_search）、
- *   候选形状校验、**没有外部标识的候选不入可入库清单**、缺范围时明确报错；
+ * - `cvagent_kb_scout`：委派契约（Asta 检索工具族、**含唯一有量的 snippet_search**、
+ *   必带 signal）、候选形状校验、**没有外部标识的候选不入可入库清单**、
+ *   **范围缺省读项目状态**（E1 回归）、入参覆盖状态、两边都空时明确报错；
  * - `cvagent_kb_import_papers`：批量入库逐条回传（部分成功是正常结果）、坏条目只影响自己；
  * - `cvagent_kb_analyze`：确定性去重上下文（既有条目进 prompt）、Analyst 只拿只读工具、
  *   提案形状校验（缺 source_papers 的丢弃）、`dry_run` 不写库、真实写入的 created/merged 计数。
@@ -61,10 +62,23 @@ async function makeEnv(options = {}) {
     },
   }
 
+  // 项目状态的假实现：`options.state` 就是 cvagent_scope_set 落盘后的形态。
+  const stateCalls = []
+  const fakeState = {
+    async getState() {
+      stateCalls.push(1)
+      return options.state
+    },
+  }
+
   researchTools.apply({
     tools: runtime,
     kb,
-    get: (name) => (name === 'subagents' ? fakeSubagents : undefined),
+    get: (name) => {
+      if (name === 'subagents') return fakeSubagents
+      if (name === 'projectState') return fakeState
+      return undefined
+    },
   })
 
   let seq = 0
@@ -136,15 +150,26 @@ describe('cvagent_kb_scout / import_papers / analyze（真实 ToolRuntime + 假 
     expect(call.request.maxDepth).toBe(0)
     expect(call.request.persona).toContain('Scout')
     expect(call.request.outputSchema.properties.papers.type).toBe('array')
-    // 隔离红线：Scout 不含 snippet_search（正文留给后续取证）
+    // E31 回归：委派请求必须带 signal（缺它 → 宿主 provider 抛 reading 'aborted'）
+    expect(call.request.signal).toBeDefined()
+    // 隔离红线仍然成立，但边界是**主编排上下文**（ORCHESTRATOR_DENY_TOOLS），
+    // 不是子代理自己的上下文：Scout 需要 snippet_search 这个唯一有量的发现通道。
     const allow = call.request.toolFilter.allow
-    expect(allow).not.toContain('mcp__asta__snippet_search')
+    expect(allow).toContain('mcp__asta__snippet_search')
     expect(allow).toContain('mcp__asta__get_paper_batch')
     // prompt 里带上范围与检索提示
     const prompt = String(call.request.prompt[0].text)
     expect(prompt).toContain('音频深伪检测')
     expect(prompt).toContain('ASVspoof')
     expect(prompt).toContain('limit 不生效') // 提醒别用 relevance 检索做批量
+    // E32 守卫：**prompt 推荐的每个 mcp__asta__* 工具都必须在白名单里**。
+    // 这正是出过事的地方——prompt 让子代理首选 snippet_search，白名单却剔掉了它，
+    // 子代理一调用即被拒（E14 响亮拒绝），整轮委派失败。
+    const recommended = [...prompt.matchAll(/mcp__asta__[a-z_]+/g)].map((m) => m[0])
+    expect(recommended.length).toBeGreaterThan(0)
+    for (const tool of new Set(recommended)) {
+      expect(allow, `prompt 推荐了 ${tool}，但 Scout 白名单里没有它`).toContain(tool)
+    }
 
     // import_json 只含可入库的两条
     const importable = JSON.parse(result.value.import_json)
@@ -158,6 +183,38 @@ describe('cvagent_kb_scout / import_papers / analyze（真实 ToolRuntime + 假 
     const result = await env.execute(KB_TOOLS.scout, {})
     expect(result.isError).toBe(true)
     expect(JSON.stringify(result.content)).toMatch(/缺少检索范围/)
+  })
+
+  // ── E1 回归：范围缺省读**项目状态**（用户实测：scope 早落盘，Scout 仍要求先 scope_set）──
+  it('scout：不传范围时读项目状态里的已落盘范围（scope_source=state）', async () => {
+    env = await makeEnv({ state: { sub_domain: '跨生成器泛化', keywords: ['cross-generator', 'DF40'] } })
+    const result = await env.execute(KB_TOOLS.scout, { max_results: 10 })
+    expect(result.isError).toBe(false)
+    expect(result.value.scope_source).toBe('state')
+
+    const [call] = env.startCalls
+    const prompt = String(call.request.prompt[0].text)
+    expect(prompt).toContain('跨生成器泛化')
+    expect(prompt).toContain('DF40')
+    expect(call.request.label).toContain('跨生成器泛化')
+  })
+
+  it('scout：入参覆盖状态（scope_source=args）', async () => {
+    env = await makeEnv({ state: { sub_domain: '状态里的范围', keywords: ['state-kw'] } })
+    const result = await env.execute(KB_TOOLS.scout, { sub_domain: '入参范围', keywords: ['arg-kw'] })
+    expect(result.value.scope_source).toBe('args')
+    const prompt = String(env.startCalls[0].request.prompt[0].text)
+    expect(prompt).toContain('入参范围')
+    expect(prompt).toContain('arg-kw')
+    expect(prompt).not.toContain('状态里的范围')
+  })
+
+  it('scout：状态里没有范围且入参为空 → 报错仍提示先落盘', async () => {
+    env = await makeEnv({ state: { sub_domain: null, keywords: [] } })
+    const result = await env.execute(KB_TOOLS.scout, {})
+    expect(result.isError).toBe(true)
+    expect(JSON.stringify(result.content)).toContain('cvagent_scope_set')
+    expect(env.startCalls).toHaveLength(0)
   })
 
   it('scout：子代理未按契约应答 → isError', async () => {

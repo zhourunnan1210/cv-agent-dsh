@@ -184,9 +184,22 @@ export type AstaToolName = (typeof ASTA_TOOL_NAMES)[keyof typeof ASTA_TOOL_NAMES
 /**
  * Scout 角色的 `toolFilter.allow`（勘误 §4.2）：只做检索与去重，回传候选列表。
  *
- * 刻意**不含** `snippet_search`——§5.1 要求 Scout 只返回候选，不返回正文。
+ * **含 `snippet_search`**（2026-09-17 修正，E32）：它是 Asta 族里**唯一有量**的发现通道
+ * ——`search_papers_by_relevance` 的 `limit` 不生效（只回单篇），`search_papers_by_title`
+ * 只做标题精确匹配。要一次发现几十篇，只能用 `snippet_search`（limit 100 ≈ 60–70 篇）。
+ *
+ * 曾一度把它排除在外，理由是 §5.1 的"Scout 只返回候选、不返回正文"。但那条红线的**边界
+ * 是主编排上下文**，不是子代理自己的上下文：`snippet_search` 返回的是 ~500 词片段（不是全文），
+ * 且只落进 Scout 的一次性上下文（工具回传主 Agent 的只有结构化候选列表）。
+ * 与此同时 `ORCHESTRATOR_DENY_TOOLS` 仍然禁止主编排会话直接调用它——**隔离红线由那一侧守**，
+ * 不需要靠让 Scout 变瞎来守。
+ *
+ * 教训：白名单与委派 prompt 是**一对必须同时成立的声明**。此前 prompt 让子代理首选
+ * `snippet_search`、白名单却把它剔掉，子代理一调用即被拒（E14 的"响亮拒绝"），
+ * 整轮委派随之失败。
  */
 export const SCOUT_ALLOWED_TOOLS = [
+  ASTA_TOOL_NAMES.snippetSearch,
   ASTA_TOOL_NAMES.searchByRelevance,
   ASTA_TOOL_NAMES.searchByTitle,
   ASTA_TOOL_NAMES.getPaper,

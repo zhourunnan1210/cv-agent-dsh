@@ -64,7 +64,8 @@
 | E27 | §2.1 MinerU 批量接口 | 用文件名对账（`extract_result[].file_name`） | 可用但**不必要地脆弱**：文件名要经过我们的 sanitize 与截断。实测 `extract_result[]` **原样回传提交时的 `data_id`**（2026-09-17）——它是我们自己给的业务标识，天然唯一、不受文件名规则影响 | **L1** | `MineruFileResult` 增 `dataId`；`batch-parse.mjs` 对账**优先 `data_id`、回退 `file_name`** |
 | E28 | §5.4 环境前置 / `scripts/start-dsh-web.ps1` | 隐含假设：启动脚本「跑起来就能用」 | **中文 `.ps1` 无 BOM 在 Windows PowerShell 5.1 下必崩**。实测 2026-09-17（用户报「无法启动」）：根因是**编码而非逻辑**——PS 5.1 读无 BOM 的 `.ps1` 按 **ANSI/GBK** 解码，中文注释变乱码（`代理端口` → `浠ｇ悊绔彛`），乱码字节吃掉字符串引号 → **解析期报错，脚本一行都不执行**，且报错指向乱码位置、极难定位。本项目 shell 实测为 **5.1.26100**（不是 pwsh 7） | **L1** | ① 该文件加 **UTF-8 BOM** 并把「不许丢 BOM」写进文件头；② 新增护栏 `tests/ps1-encoding.test.ts`：扫描全仓 `.ps1`，**含非 ASCII 却无 BOM 即失败**（已用「去 BOM 失败 → 恢复通过」双向验证），并逐项钉住脚本必须注入的前置 |
 | E29 | §5.4 环境前置 | 隐含假设：`dsh web` 直接启动与经脚本启动等价 | **不等价，且差值全是静默的**。实测 2026-09-17（用户以 `dsh web` 重启主机后）：宿主环境里 `HTTPS_PROXY` / `NODE_USE_ENV_PROXY` / `CV_PROJECT_SKILLS_DIR` / `CV_PLUGIN_SKILLS_DIR` / `ASTA_API_KEY` / `MINERU_TOKEN` **全部未设置**。后果：preset 的 `mcp-asta` 行拿到 `x-api-key: UNSET` → **检索工具静默消失**；即使有 key，缺 `NODE_USE_ENV_PROXY=1` 也连不上（Node fetch 忽略 HTTPS_PROXY）；skill 根回落到相对路径（换工作区即失效）。**这些前置只能由宿主进程环境提供**，仓库里的配置文件补不上 | **L1** | 启动一律走 `scripts/start-dsh-web.ps1 -DryRun` 先自检（显式打印每一项 + skill 根是否存在 + 代理是否在监听 + Asta 连通预检），再正式启动 |
-| E30 | §4.4 / 全仓行模块 | 隐含假设：①插件行的 `inject` 与代码一致（`tests/instructions.test.ts` 曾**替它补齐**声明）；②"声明了 inject"就等于"loader 读得到 inject" | **两层，且两层报错一字不差**。实测 2026-09-17（用户报「无法切换到「CV Research Orchestrator」」）：`src/instructions.ts` 的 `apply` 访问 `ctx.systemPrompt` 却没有 `inject`，Cordis 抛 `cannot get property "systemPrompt" without inject`——与 E19 同族的**爆炸半径**（错误发生在"切换 preset"上，用户看到的是"这个 preset 坏了"）。**第一层**是漏声明；补上 `export const inject` 后用户重启，**报错一模一样**——因为还有**第二层**：loader 每行都走 `unwrapExports(module) = module.default ?? module`，而该文件当时有 `export default apply`（普通函数），于是插件被解包成那个**函数**，命名 `inject` 被整个丢弃（8 个工具行没有 default 才侥幸有效；3 个服务行走的是 `static inject`）。E18-② 说的"有 default 或命名 apply 即可装载"**没有**说两种形态下 inject 读取位置相同——歧义即事故 | **L1**（用户界面实测两次，非推演） | ① `instructions.ts` 去掉 default，与工具行同形；② 静态守卫 `tests/row-inject.test.ts` 按 `unwrapExports` 规则算"有效声明"；③ 运行期守卫 `scripts/probe-preset-rows.mjs`（**新进程** + 真 Cordis + 同一条解包规则，逐行试挂 13 个本包行）。三者都用双向变异验证；详见 §12.9 |
+| E31 | §5.2 子代理委派 / §16.1 角色矩阵 | 隐含假设：自己抄一份 `SubagentLike { start(name, request: unknown) }` 就够了 | **`request: unknown` 让这次委派的每一个字段都逃过类型检查**，于是**必填**的 `signal` 被漏掉。实测 2026-09-17（用户在真实会话里 `cvagent_kb_scout` 连败 3 次）：`Error: Cannot read properties of undefined (reading 'aborted')`。抛出点是宿主 `dsh-subagent-in-process-driver` 的第一行 `if (request.signal.aborted) throw prePublicationAbort()`，而该文件 jsdoc 明写「the trusted typed start request, **including its required signal**」、真接口里 `readonly signal: AbortSignal`（非可选）。**这是本 session 第三次同族事故**（E30 的 inject、`instructions.test.ts` 的替声明）：自己重写对方的契约 → 没人能检查它 | **L1**（用户真实会话 3 连败） | ① 四个文件各抄的 `SubagentLike` 合并为 `src/subagent.ts` 一处声明，`signal` 必填，6 个调用点全部显式传 `exec.signal`；② `tests/subagent-contract.test.ts` 直接读**已安装的** `dsh-subagent/lib/types/types.d.ts`，要求本地镜像覆盖真接口的每个必填字段（宿主将来加必填字段会红），并静态要求每个 `subagents.start` 调用点带 `signal`、禁止再出现 `request: unknown` |
+| E32 | §5.1 Scout 隔离红线 / §12.3 检索补全 | ① "Scout 不含 `snippet_search`"被当成红线本身；② Scout 的"缺省读项目状态"只写在**工具描述**里 | ① **白名单与委派 prompt 是一对必须同时成立的声明**：prompt 让子代理「先用 `mcp__asta__snippet_search` 发现（唯一有量的通道）」，白名单却把它剔掉——子代理一调用即被响亮拒绝（E14），整轮委派失败。而 `snippet_search` 恰恰是 Asta 族**唯一有量**的发现通道（`search_papers_by_relevance` 的 `limit` 不生效）；§5.1 红线的边界是**主编排上下文**，不是子代理的一次性上下文。② 用户实测：`cvagent_scope_set` 早已落盘（`scope_ready: true`），Scout 仍报「请先 cvagent_scope_set」——因为实现只认入参，"缺省读状态"从未实现 | **L1**（用户真实会话） | ① `SCOUT_ALLOWED_TOOLS` 加入 `snippet_search`（共 8 个），主编排侧隔离仍由 `ORCHESTRATOR_DENY_TOOLS` + E20 护栏守；② Scout 经 `ctx.get('projectState')` 读已落盘范围，入参优先、**两边都空**才报错，输出加 `scope_source: args/state` 让口径来源可见；③ 回归断言：prompt 里推荐的每个 `mcp__asta__*` 都必须在白名单内（这正是出事点） |
 
 ---
 
@@ -1388,8 +1389,70 @@ const fork = await app.plugin({
 
 ---
 
-## 附录 A：本次已落地的仓库产物
+### 12.10 真实会话首轮联调：三个缺陷与同一条根因（2026-09-17，E31 / E32）
 
+preset 挂载修好之后，用户按 §12.4 的链路跑第一个真实会话（课题：**跨生成器/跨域泛化的
+Deepfake 检测**），第一步 `cvagent_scope_set` 成功，随后 `cvagent_kb_scout` 连续失败。
+逐条从 transcript 里核过（`~/.dsh/sessions/.../session.v3.jsonl.zstd`，多帧 zstd，
+解压后可完整复盘）：
+
+| # | 现象（原始错误串） | 根因 | 归属 |
+| --- | --- | --- | --- |
+| E1 | `缺少检索范围：请先 cvagent_scope_set 落盘…`，但 `scope_ready: true` | Scout 只认入参，从未读项目状态（而工具描述一直承诺会读） | 本插件（E32-②） |
+| E2 | `Cannot read properties of undefined (reading 'aborted')`，3 次 | 委派请求漏传**必填**的 `signal` | 本插件（E31） |
+| E3 | 两条 `read` 的 `tool call aborted before dispatch` | **不是缺陷**：`dsh-session-checkpoint-policy` 在分发前看到 `exec.signal` 已中止就拒绝。该批读取发生在 Scout 失败之后很久，且紧接着 `ask_user_question` 被"用户取消"——是用户中止了回合 | 非缺陷 |
+
+#### 同一条根因：我们替对方写了它的契约
+
+这三个（加上 E30）看着毫不相干，根因是同一个动作：
+
+| 事故 | 我们"替对方写"的东西 | 于是没有被检查的东西 |
+| --- | --- | --- |
+| E30 | 测试自己写了一份 `inject: ['systemPrompt']` | 行模块**自己**的声明够不够 |
+| E30 第二层 | 以为"写了命名 `inject`"就等于"loader 读得到" | loader 的 `unwrapExports` 解包规则 |
+| E31 | 四个文件各抄 `SubagentLike { request: unknown }` | 委派请求的**每一个字段**（含必填 `signal`） |
+| E32-① | 白名单与 prompt 各写一份、无人对账 | 两者是否互相成立 |
+
+**判据**：只要一个事实同时出现在两处（声明与实现、prompt 与白名单、镜像与真类型），
+就必须有**一处是权威、另一处由机器对账**。本仓库现在的对账点：
+
+- 真类型 → `src/subagent.ts` 镜像：`tests/subagent-contract.test.ts`（读已安装的 `types.d.ts`）
+- 行模块声明 → loader 语义：`tests/row-inject.test.ts` + `scripts/probe-preset-rows.mjs`
+- 委派 prompt → toolFilter：`tests/kb-research.test.ts`（prompt 里推荐的每个 `mcp__asta__*` 必须在白名单内）
+- 预设结构 → 挂载规则：`scripts/check-preset.mjs`
+
+#### 顺带纠正一个误读：`knowledge_building: pending` ≠ 库是空的
+
+同一次会话里 `cvagent_state_get` 显示 `stages.knowledge_building.status = "pending"`，
+而 `cvagent_kb_summary` 显示库里有 390 篇论文 / 171 条四库条目。这两者**不矛盾**：
+
+- `pending` 是**阶段状态**——`cvagent_state_advance` 从未被调用过，门控未结算；
+- 四库条数是**语料存量**——此前课题积累的产物，与本次课题无关。
+
+真正的待决问题（用户已提出，需人工定夺）是**存量归属**：390 篇论文与 171 条条目
+是上一个课题的语料，而新课题（跨域泛化）要在同一份 `metadata.db` 与同一个项目状态上继续。
+判据读的是**绝对总量**，因此"知识建成"的门控会被历史存量直接顶过——门控于是变成形式。
+处理方案见 §12.11。
+
+---
+
+### 12.11 待决：存量语料的处理（需要人工定夺）
+
+> 本节只记录选项与代价，不预设结论；`cvagent_scope_set` 已把新课题的范围落盘，
+> 但语料归属尚未裁定。
+
+| 方案 | 做法 | 代价 | 风险 |
+| --- | --- | --- | --- |
+| A. 直接沿用 | 保留 390 篇 / 171 条，Scout 只做增量 | 零成本，立刻有深度 | 门控被存量顶过，"知识建成"失去判据意义；四库里混着旧课题条目 |
+| B. 全新开始 | 新项目状态 + 新库，旧库冻结归档 | 门控真实；但 MinerU 额度（~1990/2000，按日重置）与已解析的 154 篇要重来 | 重复劳动最大 |
+| C. 沿用 + 记口径基线（建议） | 保留语料（去重、引用都要用），但在状态里记下**本次课题的起点快照**，门控只认快照之后的新增 | 需要给 `evaluateCriteria` 加"相对基线"的计数口径（一次改动 + 测试） | 需要明确"新增"的判定字段（入库时间/来源通道） |
+
+C 的关键依赖：论文与条目是否有可靠的时间戳字段可做基线比较。若无，退化为在状态里存
+`scope_set_at` + 一张显式白名单（本次课题认可的 paper_id 集合）。
+
+---
+
+## 附录 A：本次已落地的仓库产物
 
 ```
 D:\Code\VScodeRepo\dsh-plugin\          ← cv-research-agent monorepo 根

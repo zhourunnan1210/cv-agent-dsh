@@ -35,6 +35,7 @@ import type {} from '@deepseek-ai/dsh-tools'
 
 import { IDEA_TOOLS } from '../tools/names.js'
 import type { KbService } from '../kb/service.js'
+import type { SubagentLike } from '../subagent.js'
 
 export const name = 'cvagent-write-draft'
 export const inject = ['kb', 'tools']
@@ -89,13 +90,6 @@ export const WRITER_PERSONA = [
 
 function renderJson(_args: unknown, value: unknown) {
   return [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }]
-}
-
-interface SubagentLike {
-  start(name: string, request: unknown): Promise<{
-    result: Promise<{ structured?: unknown; stopReason: string; diagnostic?: string }>
-    dispose(): Promise<void>
-  }>
 }
 
 /** Writer 的 outputSchema（摘要形态：正文不进父上下文）。 */
@@ -295,6 +289,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       ].filter((line) => line !== '').join('\n')
 
       const run = await subagents.start('spawn', {
+        signal: exec.signal,
         parent: exec.agent,
         label: `writer:${section}`,
         prompt: [{ type: 'text', text: prompt }],

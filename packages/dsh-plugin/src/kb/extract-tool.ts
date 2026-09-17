@@ -28,6 +28,7 @@ import type { PaperExtraction, ExtractionQuality } from '@cv-research/core'
 
 import { KB_TOOLS } from '../tools/names.js'
 import type { KbService } from './service.js'
+import type { SubagentLike } from '../subagent.js'
 
 export const name = 'cvagent-kb-extract-tool'
 export const inject = ['kb', 'tools']
@@ -94,13 +95,6 @@ function coerceExtraction(paperId: string, value: unknown): PaperExtraction | un
   }
 }
 
-interface SubagentLike {
-  start(name: string, request: unknown): Promise<{
-    result: Promise<{ structured?: unknown; stopReason: string; diagnostic?: string }>
-    dispose(): Promise<void>
-  }>
-}
-
 function renderJson(_args: unknown, value: unknown) {
   return [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }]
 }
@@ -156,6 +150,7 @@ export function apply(ctx: Context): void {
       ].join('\n')
 
       const run = await subagents.start('spawn', {
+        signal: exec.signal,
         parent: exec.agent,
         label: `reader:${paperId}`,
         prompt: [{ type: 'text', text: prompt }],

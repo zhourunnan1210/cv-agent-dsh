@@ -19,6 +19,7 @@ import { normalizeTitle, type IdeaCandidate } from '@cv-research/core'
 
 import { IDEA_TOOLS } from '../tools/names.js'
 import type { IdeaScoreService } from './service.js'
+import type { SubagentLike } from '../subagent.js'
 
 export const name = 'cvagent-idea-tools'
 export const inject = ['ideaScore', 'kb', 'tools']
@@ -66,13 +67,6 @@ export const JUDGE_PERSONA = [
 
 function renderJson(_args: unknown, value: unknown) {
   return [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }]
-}
-
-interface SubagentLike {
-  start(name: string, request: unknown): Promise<{
-    result: Promise<{ structured?: unknown; stopReason: string; diagnostic?: string }>
-    dispose(): Promise<void>
-  }>
 }
 
 /** 候选 idea 的 outputSchema（Generator 用）。 */
@@ -262,6 +256,7 @@ export function apply(ctx: Context): void {
         let note: string | undefined
         try {
           const run = await subagents.start('spawn', {
+            signal: exec.signal,
             parent: exec.agent,
             label: `generator:${lens.slice(0, 40)}`,
             prompt: [{ type: 'text', text: prompt }],
@@ -414,6 +409,7 @@ export function apply(ctx: Context): void {
 
       const payload = ideaScore.buildJudgePayload({ idea, derived, evidence, external })
       const run = await subagents.start('spawn', {
+        signal: exec.signal,
         parent: exec.agent,
         label: `judge:${idea.idea_id}`,
         prompt: [{ type: 'text', text: payload }],

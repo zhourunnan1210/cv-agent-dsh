@@ -46,6 +46,7 @@ import { strict as assert } from 'node:assert'
 import {
   ASTA_TOOL_NAMES,
   CVAGENT_TOOL_FAMILIES,
+  KB_TOOLS,
   READER_ALLOWED_TOOLS,
   SCOUT_ALLOWED_TOOLS,
 } from '../lib/tools/names.js'
@@ -79,11 +80,19 @@ const ROLE_MATRIX = {
     mustNotSee: [],
     rationale: '§4.1：边界由 preset + E20 护栏提供，非 toolFilter',
   },
-  /** Scout：只做检索与去重，回传候选列表。 */
+  /**
+   * Scout：只做检索与去重，回传候选列表。
+   *
+   * ⚠️ 2026-09-17 修正（E32）：**`snippet_search` 在 Scout 的白名单里**——它是 Asta 族
+   * 唯一有量的发现通道。§5.1 那条"只返回候选、不返回正文"的红线，边界是**主编排上下文**：
+   * 片段只落进 Scout 的一次性上下文，回传主 Agent 的只有结构化候选；主编排会话那一侧
+   * 由 ORCHESTRATOR_DENY_TOOLS + E20 护栏守（本文件末尾的专项断言）。
+   * 此前把红线误解成"让 Scout 变瞎"，导致委派 prompt 推荐的工具被白名单剔掉，委派整轮失败。
+   */
   scout: {
     allow: [...SCOUT_ALLOWED_TOOLS],
-    mustNotSee: [ASTA_TOOL_NAMES.snippetSearch],
-    rationale: '§5.1：只返回候选列表，不返回正文',
+    mustNotSee: [KB_TOOLS.upsertEntry, KB_TOOLS.importPaper],
+    rationale: '§5.1：只返回候选列表，不写库（正文片段只落进它自己的一次性上下文）',
   },
   /** Reader：围绕单篇取证，不检索。 */
   reader: {

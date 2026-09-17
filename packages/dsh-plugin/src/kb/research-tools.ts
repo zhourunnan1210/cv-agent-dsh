@@ -2,8 +2,9 @@
  * 研究流程工具行（P3-4）：Scout 检索委派、Analyst 归纳委派、批量入库。
  *
  * 三段职责（对应勘误 §12.1/§12.3 的缺口）：
- * 1. **`cvagent_kb_scout`**：按细分领域与关键词委派 Scout 子代理（只给 Asta 检索工具，
- *    **不含 `snippet_search`**——Scout 只回候选，正文留给后续取证），返回候选列表；
+ * 1. **`cvagent_kb_scout`**：按细分领域与关键词委派 Scout 子代理（给 Asta 检索工具族，
+ *    **含 `snippet_search`**——它是唯一有量的发现通道，见 `SCOUT_ALLOWED_TOOLS` 的说明），
+ *    返回候选列表；
  * 2. **`cvagent_kb_import_papers`**：把候选**批量**入库（逐条回传 upsert 结果）。
  *    为什么需要批量：Scout 一轮可能带回几十篇，让模型为每篇各调一次工具是纯浪费；
  *    逐条回传结果保证"部分成功"也能被看见，不是全成/全败；
@@ -23,11 +24,22 @@ import type { ExtensionFields, PaperExtraction, PaperRecord, StoreName } from '@
 
 import { ASTA_TOOL_NAMES, KB_TOOLS, SCOUT_ALLOWED_TOOLS } from '../tools/names.js'
 import type { KbService } from './service.js'
+import type { SubagentLike } from '../subagent.js'
 
 export const name = 'cvagent-kb-research'
 export const inject = ['kb', 'tools']
 
-/** Scout：只做检索与去重，回传候选。刻意不含 snippet_search（§5.1 隔离红线）。 */
+/**
+ * `projectState` 的最小视图：只读研究范围。
+ *
+ * 用 `ctx.get` 取可选依赖（而非 `inject`）：范围缺失只该让 Scout 报"请先落盘"，
+ * 不该让整行进入 waiting。同 realm 保证拿到的就是本项目实例。
+ */
+interface ProjectStateLike {
+  getState(): Promise<{ sub_domain: string | null; keywords: readonly string[] } | undefined>
+}
+
+/** Scout：只做检索与去重，回传候选。**含 `snippet_search`**（唯一有量的发现通道，见 SCOUT_ALLOWED_TOOLS）。 */
 export const SCOUT_FILTER = { allow: [...SCOUT_ALLOWED_TOOLS] } as const
 
 /** Analyst：需要读既有条目做去重，故给知识库只读检索；**不给写权限**（写入由工具层按规则做）。 */
@@ -53,13 +65,6 @@ export const ANALYST_PERSONA = [
 
 function renderJson(_args: unknown, value: unknown) {
   return [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }]
-}
-
-interface SubagentLike {
-  start(name: string, request: unknown): Promise<{
-    result: Promise<{ structured?: unknown; stopReason: string; diagnostic?: string }>
-    dispose(): Promise<void>
-  }>
 }
 
 /** Scout 的 outputSchema。 */
@@ -181,6 +186,8 @@ export function apply(ctx: Context): void {
   const kb: KbService = ctx.kb
   const toolsRuntime = ctx.tools
   const subagents = ctx.get('subagents') as SubagentLike | undefined
+  // 可选读取：状态服务与 kb 同处一个 isolate realm（preset 的 cvagent-project-group）。
+  const projectState = ctx.get('projectState') as ProjectStateLike | undefined
 
   // ── cvagent_kb_scout ─────────────────────────────────────────────────────
   toolsRuntime.register(defineTool({
@@ -202,6 +209,7 @@ export function apply(ctx: Context): void {
         properties: {
           count: { type: 'integer', required: true },
           with_external_id: { type: 'integer', required: true, description: '带 DOI 或 arXiv ID 的候选数（可入库的前提）' },
+          scope_source: { type: 'string', required: true, enum: ['args', 'state'], description: '本次研究范围的来源：args=调用入参；state=项目状态里落盘的范围' },
           candidates: {
             type: 'array',
             required: true,
@@ -227,10 +235,26 @@ export function apply(ctx: Context): void {
       if (subagents === undefined) throw new Error('subagents 服务不可用：无法委派 Scout 子代理')
       if (exec.agent === undefined) throw new Error('调用缺少 agent 上下文：无法建立委派父子关系')
 
-      const subDomain = args.sub_domain === undefined ? '' : String(args.sub_domain)
-      const keywords = (args.keywords ?? []).map(String)
+      // 缺省读**项目状态里的研究范围**——这是工具描述里一直承诺、实现却漏掉的一半
+      // （2026-09-17 实测：`cvagent_scope_set` 早已落盘，Scout 仍报"请先 cvagent_scope_set"，
+      //  因为这里只认入参）。范围落盘一次即可，之后每次检索不必重复传。
+      const fromState = await projectState?.getState()
+      const stateSubDomain = fromState?.sub_domain ?? ''
+      const stateKeywords = fromState?.keywords ?? []
+
+      const argSubDomain = args.sub_domain === undefined ? '' : String(args.sub_domain).trim()
+      const argKeywords = (args.keywords ?? []).map(String)
+      const usedArgs = argSubDomain !== '' || argKeywords.length > 0
+
+      const subDomain = argSubDomain !== '' ? argSubDomain : String(stateSubDomain)
+      const keywords = argKeywords.length > 0 ? argKeywords : [...stateKeywords]
+
       if (subDomain.trim() === '' && keywords.length === 0) {
-        throw new Error('缺少检索范围：请先 cvagent_scope_set 落盘细分领域与关键词，或本次显式传入 sub_domain / keywords')
+        // 只有**入参与状态都为空**时才拦——此时"先落盘"才是真的有用建议。
+        throw new Error(
+          '缺少检索范围：项目状态里没有研究范围，本次也没传 sub_domain / keywords。'
+          + '请先 cvagent_scope_set 落盘细分领域与关键词，或本次显式传入。',
+        )
       }
       const maxResults = args.max_results === undefined ? 30 : Number(args.max_results)
 
@@ -246,6 +270,7 @@ export function apply(ctx: Context): void {
       ].filter((line) => line !== '').join('\n')
 
       const run = await subagents.start('spawn', {
+        signal: exec.signal,
         parent: exec.agent,
         label: `scout:${(subDomain || keywords[0] || 'scope').slice(0, 32)}`,
         prompt: [{ type: 'text', text: prompt }],
@@ -271,6 +296,8 @@ export function apply(ctx: Context): void {
         return {
           count: candidates.length,
           with_external_id: importable.length,
+          // 让"范围从哪来"可见：状态口径过期时，这是唯一能看出来的地方。
+          scope_source: usedArgs ? ('args' as const) : ('state' as const),
           candidates: candidates.map((candidate) => ({ ...candidate })),
           import_json: JSON.stringify(importable),
         }
@@ -473,6 +500,7 @@ export function apply(ctx: Context): void {
       ].join('\n')
 
       const run = await subagents.start('spawn', {
+        signal: exec.signal,
         parent: exec.agent,
         label: `analyst:${extractions.length}papers`,
         prompt: [{ type: 'text', text: prompt }],
