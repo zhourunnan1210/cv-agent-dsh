@@ -129,6 +129,13 @@
     - id: tool-cvagent-domain
       name: cv-agent-dsh/domain-tools
 
+    # P4-1: cvagent_write_draft —— 写作上下文组装 + Writer 委派。
+    # **不重造写作引擎**：写作方法来自仓库里的写作 skill（子代理自己
+    # 调 skill({name}) 加载），本工具只负责组装「领域口径 + 三库条目 +
+    # 实验证据路径 + 写作纪律」并委派。同组原因：要读 kb（条目与 pack 注册表）。
+    - id: tool-cvagent-write
+      name: cv-agent-dsh/write-draft
+
 # ── orchestrator execution-level guard (E20) ───────────────────────────────
 #
 # Provides no service — consumes the host `tools` event surface and the host

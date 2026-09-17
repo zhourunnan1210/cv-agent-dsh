@@ -54,6 +54,7 @@ const kbResearch = await import(lib('kb/research-tools.js'))
 const { IdeaScoreService } = await import(lib('scoring/service.js'))
 const ideaTools = await import(lib('scoring/tools.js'))
 const domainTools = await import(lib('domain/tools.js'))
+const writeTools = await import(lib('writing/tools.js'))
 const { ASTA_TOOL_NAMES, DOMAIN_TOOLS, IDEA_TOOLS, KB_TOOLS, STATE_TOOLS } = await import(lib('tools/names.js'))
 
 // ── 环境（与其它 scripts/*.mjs 同一套：代理 + .env.local；已存在的环境变量优先）──
@@ -127,6 +128,11 @@ const EXPECTED = [
     rowIds: ['tool-cvagent-domain'],
     names: Object.values(DOMAIN_TOOLS),
   },
+  {
+    family: '写作',
+    rowIds: ['tool-cvagent-write'],
+    names: [IDEA_TOOLS.writeDraft],
+  },
 ]
 
 /**
@@ -143,7 +149,6 @@ const DECLARED_NOT_WIRED = [
   IDEA_TOOLS.expLaunch,
   IDEA_TOOLS.expStatus,
   IDEA_TOOLS.expCollect,
-  IDEA_TOOLS.writeDraft,
 ]
 
 /**
@@ -206,6 +211,7 @@ const ROWS = [
   { id: 'tool-cvagent-kb-research', apply: () => kbResearch.apply({ tools: runtime, kb, get: () => undefined }) },
   { id: 'tool-cvagent-idea', apply: () => ideaTools.apply({ tools: runtime, kb, ideaScore, get: () => undefined }) },
   { id: 'tool-cvagent-domain', apply: () => domainTools.apply({ tools: runtime, kb }, { packDir: join(dir, 'packs') }) },
+  { id: 'tool-cvagent-write', apply: () => writeTools.apply({ tools: runtime, kb, get: () => undefined }, { draftsDir: join(dir, 'drafts'), experimentsDir: join(dir, 'experiments') }) },
 ]
 
 console.log('工具目录体检（cvagent + Asta）')

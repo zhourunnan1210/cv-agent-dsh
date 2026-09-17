@@ -56,6 +56,10 @@
       "types": "./lib/scoring/service.d.ts",
       "default": "./lib/scoring/service.js"
     },
+    "./write-draft": {
+      "types": "./lib/writing/tools.d.ts",
+      "default": "./lib/writing/tools.js"
+    },
     "./domain-tools": {
       "types": "./lib/domain/tools.d.ts",
       "default": "./lib/domain/tools.js"
