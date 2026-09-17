@@ -831,7 +831,7 @@ Phase 2 的提取链路是用**假 subagents 提供者**做契约测试的（6 �
 
 | # | 步骤 | 通过判据 |
 | --- | --- | --- |
-| 1 | 新会话选 **CV Research Orchestrator**，看工具目录 | 含 7 个 `cvagent_*`（5 状态 + `kb_import_paper` + `kb_extract`）与 8 个 `mcp__asta__*` |
+| 1 | 新会话选 **CV Research Orchestrator**，看工具目录 | 含 **16 个 `cvagent_*`**（状态与门控 6 + 知识库 8 + idea 2）与 **8 个 `mcp__asta__*`**。⚠️ 别拿 `names.ts` 的 25 个声明名当预期：其中 9 个是「有名字、无行注册」（domain 4 + exp 4 + write_draft 1，exp 四个已撤销）。这条现已可执行：`node scripts/check-tool-catalog.mjs [--with-asta]` |
 | 2 | 对一篇**已解析**论文调用 `cvagent_kb_extract` | 返回结构化三字段；`paper_extractions` 新增/更新该 paper_id |
 | 3 | 验证上下文洁净 | 主 Agent 上下文里**没有论文正文**（只有结构化结果）；子代理会话历史不含父会话 |
 | 4 | 验证契约刚性 | 把 `outputSchema` 必需字段之一去掉重跑，子代理应报错而非回自由文本 |

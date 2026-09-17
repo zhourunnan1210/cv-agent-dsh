@@ -103,4 +103,14 @@ describe('预设组合静态预检', () => {
       await rm(dir, { recursive: true, force: true })
     }
   })
+
+  it('工具目录体检脚本（离线）必须通过：装配出的 cvagent 工具面与契约一致', async () => {
+    // 把 `scripts/check-tool-catalog.mjs`（装载真实工具行 + 真实 ToolRuntime 枚举目录）
+    // 纳入 `pnpm test`——它正是"会话里到底有哪些工具"的唯一断言，不加守护会烂掉。
+    // 离线模式不连 Asta；Asta 那 8 个由 tests/spike-asta-mcp.mjs 线上验证。
+    const { execFileSync } = await import('node:child_process')
+    const script = join(REPO_ROOT, 'scripts', 'check-tool-catalog.mjs')
+    // stdio:'ignore'：沙箱禁止用管道捕获子进程输出；非零退出会直接抛错
+    expect(() => execFileSync('node', [script], { stdio: 'ignore', timeout: 120_000 })).not.toThrow()
+  })
 })

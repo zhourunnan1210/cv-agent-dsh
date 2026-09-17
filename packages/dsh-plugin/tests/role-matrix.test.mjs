@@ -21,8 +21,17 @@
  * ## 2026-09-16：检索面从 dsh-ai4scholar 换成 Asta MCP
  *
  * 旧版本从 vendored 的 dsh-ai4scholar 里取出它真实注册的 38 个工具来铺工具面。
- * 该 bundle 已停用，工具面改为 8 个 Asta MCP 工具（`mcp__asta__*`）+ 21 个
- * `cvagent_*` 工具。两处**能力损失**已落到矩阵里，不是笔误：
+ * 该 bundle 已停用，工具面改为 8 个 Asta MCP 工具（`mcp__asta__*`）+ `cvagent_*` 工具。
+ *
+ * ⚠️ **别把 `names.ts` 的名字数当成会话里的工具数**（2026-09-17 查清）：
+ * `names.ts` 声明 **25** 个 `cvagent_*` 名字，而 preset 实际接线 **16** 个
+ * （状态 6 + 知识库 8 + idea 2）。差的 9 个是「有名字、无行注册」：
+ * `cvagent_domain_*`(4) + `cvagent_exp_*`(4) + `cvagent_write_draft`(1)，
+ * 其中 exp 四个已按用户裁定撤销（勘误 §12.4）。
+ * 本文件里的工具面是**合成的**（把声明名全打桩注册）——它验证角色矩阵的
+ * **契约形态**，不代表部署目录；部署目录的真相由 `scripts/check-tool-catalog.mjs` 断言。
+ *
+ * 两处**能力损失**已落到矩阵里，不是笔误：
  *
  * - **Reader 失去全文读取**：Asta 没有 `read_*`，Reader 暂时只能用
  *   `get_paper` + `snippet_search` 近似替代（见 `names.ts` 的
