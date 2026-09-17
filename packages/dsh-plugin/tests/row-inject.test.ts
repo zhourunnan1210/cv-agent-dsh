@@ -81,22 +81,52 @@ function stripComments(text) {
   return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(?<!:)\/\/[^\n]*/g, '')
 }
 
-/** 取出模块声明的依赖：命名 `inject` 导出、`static inject`、或 plugin 对象里的 inject 字面量。 */
+/**
+ * 行模块声明的依赖 —— **必须算在 loader 真正会读的那一侧**。
+ *
+ * loader 每装载一行都走 `cordis-plugin-loader` 的
+ *
+ *     plugin = unwrapExports(module)   // = module.default ?? module
+ *
+ * 于是"声明写在哪"决定了它算不算数（2026-09-17 事故的第二层根因）：
+ *
+ * | 模块形态 | 解包后的插件 | inject 从哪读 |
+ * | --- | --- | --- |
+ * | 只有命名 `apply`/`inject`（本包 8 个工具行） | 模块命名空间对象 | 命名 `inject` ✅ |
+ * | `export default class extends Service` | 那个类 | `static inject` ✅ |
+ * | `export default apply`（普通函数） | **那个函数** | 函数上的 inject；**命名 `inject` 被丢弃** ❌ |
+ *
+ * 所以这里不能简单地把三种来源并成一个集合：**有 default 时命名导出必须被忽略**。
+ * 老版本的检查正是把命名导出也算作"已声明"，于是给 `instructions.ts` 的
+ * `export default apply` + `export const inject` 判了通过——而生产照样挂载失败。
+ */
 function declaredInject(text) {
-  const declared = new Set()
-  const named = /export const inject\s*(?::[^=]+)?=\s*\[([^\]]*)\]/.exec(text)
-  if (named !== null) {
-    for (const item of named[1].matchAll(/'([^']+)'|"([^"]+)"/g)) declared.add(item[1] ?? item[2])
+  const named = new Set()
+  const namedMatch = /export const inject\s*(?::[^=]+)?=\s*\[([^\]]*)\]/.exec(text)
+  if (namedMatch !== null) {
+    for (const item of namedMatch[1].matchAll(/'([^']+)'|"([^"]+)"/g)) named.add(item[1] ?? item[2])
   }
-  const statics = /static\s+inject\s*(?::[^=]+)?=\s*\[([^\]]*)\]/g
-  for (const match of text.matchAll(statics)) {
-    for (const item of match[1].matchAll(/'([^']+)'|"([^"]+)"/g)) declared.add(item[1] ?? item[2])
+
+  const statics = new Set()
+  for (const match of text.matchAll(/static\s+inject\s*(?::[^=]+)?=\s*\[([^\]]*)\]/g)) {
+    for (const item of match[1].matchAll(/'([^']+)'|"([^"]+)"/g)) statics.add(item[1] ?? item[2])
   }
-  // plugin 对象里的 inject: ['x'] （如 state/orchestrator-guard 的返回值）
+
+  // 直接挂在默认导出上的 inject（`apply.inject = [...]`），解包后依然读得到。
+  const attached = new Set()
+  for (const match of text.matchAll(/\b(\w+)\.inject\s*(?::[^=]+)?=\s*\[([^\]]*)\]/g)) {
+    for (const item of match[2].matchAll(/'([^']+)'|"([^"]+)"/g)) attached.add(item[1] ?? item[2])
+  }
+
+  // plugin 对象里的 inject: ['x']（如 orchestrator-guard 在 apply 内注册监听时用的字面量）
+  const literal = new Set()
   for (const match of text.matchAll(/\binject:\s*\[([^\]]*)\]/g)) {
-    for (const item of match[1].matchAll(/'([^']+)'|"([^"]+)"/g)) declared.add(item[1] ?? item[2])
+    for (const item of match[1].matchAll(/'([^']+)'|"([^"]+)"/g)) literal.add(item[1] ?? item[2])
   }
-  return declared
+
+  const hasDefault = /^\s*export default\b/m.test(text)
+  const effective = hasDefault ? new Set([...statics, ...attached]) : new Set([...named, ...statics, ...attached])
+  return { named, statics, attached, literal, hasDefault, effective }
 }
 
 /** 扫出按属性访问的服务（排除 `ctx.get('x')` 这种显式可选依赖）。 */
@@ -133,8 +163,8 @@ describe('行模块的 inject 声明（漏声明 = 整份 preset 挂载失败）
       const declared = declaredInject(text)
       // 服务类内部通过 this.ctx.get('kb') 取可选依赖是合法写法，已被 accessedServices 排除
       for (const service of accessed.keys()) {
-        if (!declared.has(service)) {
-          offenders.push(`${relative(REPO_SRC_ROOT, file)}：访问 ctx.${service}（${accessed.get(service)} 处）但 inject 未声明它（已声明：${[...declared].join(',') || '无'}）`)
+        if (!declared.effective.has(service)) {
+          offenders.push(`${relative(REPO_SRC_ROOT, file)}：访问 ctx.${service}（${accessed.get(service)} 处）但 inject 未声明它（解包后有效的声明：${[...declared.effective].join(',') || '无'}；命名导出：${[...declared.named].join(',') || '无'}；有 default=${declared.hasDefault}）`)
         }
       }
     }
@@ -143,17 +173,38 @@ describe('行模块的 inject 声明（漏声明 = 整份 preset 挂载失败）
     expect(offenders, `以下模块会在宿主装载时抛 "cannot get property ... without inject"：\n${offenders.join('\n')}`).toEqual([])
   })
 
-  it('instructions 行：声明了 systemPrompt（事故的直接回归）', async () => {
+  it('instructions 行：命名 inject 有效，且**没有** default 导出（事故的直接回归）', async () => {
     const text = await readFile(join(SRC, 'instructions.ts'), 'utf8')
-    expect(declaredInject(text).has('systemPrompt')).toBe(true)
-    expect(accessedServices(text).has('systemPrompt')).toBe(true)
+    const declared = declaredInject(text)
+    expect(declared.named.has('systemPrompt')).toBe(true)
+    expect(accessedServices(stripComments(text)).has('systemPrompt')).toBe(true)
+    // 有 default 就没有命名 inject 的活路：loader 只会拿到 default 那个函数。
+    expect(declared.hasDefault, 'instructions.ts 又出现了 default 导出：loader 会丢弃命名 inject').toBe(false)
+    expect(declared.effective.has('systemPrompt')).toBe(true)
+  })
+
+  it('有 default 导出的行模块：inject 必须落在 default 那一侧', async () => {
+    const files = await listSourceFiles(SRC)
+    const offenders = []
+    for (const file of files) {
+      const text = await readFile(file, 'utf8')
+      const code = stripComments(text)
+      if (!/^\s*export default\b/m.test(code)) continue
+      const declared = declaredInject(text)
+      // default 形态下，命名 inject 是死代码——出现即说明作者以为它有效。
+      if (declared.named.size > 0 && declared.effective.size === 0) {
+        offenders.push(`${relative(REPO_SRC_ROOT, file)}：同时有 default 导出和命名 inject，而 default 上没有 inject —— loader 解包后拿到 default，命名 inject 被丢弃`)
+      }
+    }
+    expect(offenders, offenders.join('\n')).toEqual([])
   })
 
   it('工具行：都声明了 tools（否则 register 拿不到运行时）', async () => {
     const toolsRows = ['state/tools.ts', 'kb/tools.ts', 'kb/extract-tool.ts', 'kb/entry-tools.ts', 'kb/research-tools.ts', 'scoring/tools.ts', 'domain/tools.ts', 'writing/tools.ts']
     for (const row of toolsRows) {
       const text = await readFile(join(SRC, row), 'utf8')
-      expect(declaredInject(text).has('tools'), `${row} 未声明 tools`).toBe(true)
+      expect(declaredInject(text).effective.has('tools'), `${row} 未声明 tools`).toBe(true)
+      expect(declaredInject(text).hasDefault, `${row} 不该有 default 导出（命名 inject 会被丢弃）`).toBe(false)
     }
   })
 })

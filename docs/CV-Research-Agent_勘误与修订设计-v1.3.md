@@ -64,7 +64,7 @@
 | E27 | §2.1 MinerU 批量接口 | 用文件名对账（`extract_result[].file_name`） | 可用但**不必要地脆弱**：文件名要经过我们的 sanitize 与截断。实测 `extract_result[]` **原样回传提交时的 `data_id`**（2026-09-17）——它是我们自己给的业务标识，天然唯一、不受文件名规则影响 | **L1** | `MineruFileResult` 增 `dataId`；`batch-parse.mjs` 对账**优先 `data_id`、回退 `file_name`** |
 | E28 | §5.4 环境前置 / `scripts/start-dsh-web.ps1` | 隐含假设：启动脚本「跑起来就能用」 | **中文 `.ps1` 无 BOM 在 Windows PowerShell 5.1 下必崩**。实测 2026-09-17（用户报「无法启动」）：根因是**编码而非逻辑**——PS 5.1 读无 BOM 的 `.ps1` 按 **ANSI/GBK** 解码，中文注释变乱码（`代理端口` → `浠ｇ悊绔彛`），乱码字节吃掉字符串引号 → **解析期报错，脚本一行都不执行**，且报错指向乱码位置、极难定位。本项目 shell 实测为 **5.1.26100**（不是 pwsh 7） | **L1** | ① 该文件加 **UTF-8 BOM** 并把「不许丢 BOM」写进文件头；② 新增护栏 `tests/ps1-encoding.test.ts`：扫描全仓 `.ps1`，**含非 ASCII 却无 BOM 即失败**（已用「去 BOM 失败 → 恢复通过」双向验证），并逐项钉住脚本必须注入的前置 |
 | E29 | §5.4 环境前置 | 隐含假设：`dsh web` 直接启动与经脚本启动等价 | **不等价，且差值全是静默的**。实测 2026-09-17（用户以 `dsh web` 重启主机后）：宿主环境里 `HTTPS_PROXY` / `NODE_USE_ENV_PROXY` / `CV_PROJECT_SKILLS_DIR` / `CV_PLUGIN_SKILLS_DIR` / `ASTA_API_KEY` / `MINERU_TOKEN` **全部未设置**。后果：preset 的 `mcp-asta` 行拿到 `x-api-key: UNSET` → **检索工具静默消失**；即使有 key，缺 `NODE_USE_ENV_PROXY=1` 也连不上（Node fetch 忽略 HTTPS_PROXY）；skill 根回落到相对路径（换工作区即失效）。**这些前置只能由宿主进程环境提供**，仓库里的配置文件补不上 | **L1** | 启动一律走 `scripts/start-dsh-web.ps1 -DryRun` 先自检（显式打印每一项 + skill 根是否存在 + 代理是否在监听 + Asta 连通预检），再正式启动 |
-| E30 | §4.4 / 全仓行模块 | 隐含假设：插件行的 `inject` 声明与它的代码是一致的（`tests/instructions.test.ts` 曾**替它补齐** inject 声明） | **漏声明一个服务 = 整份 preset 挂载失败**。实测 2026-09-17（用户报「无法切换到「CV Research Orchestrator」」）：`src/instructions.ts` 的 `apply` 访问 `ctx.systemPrompt`，却没有 `inject: ['systemPrompt']`，Cordis 抛 `cannot get property "systemPrompt" without inject`。与 E19 同族的**爆炸半径**：错误发生在"切换 preset"这个动作上，用户看到的是"这个 preset 坏了"，而不是"某一行少写了一个词"。**测试没抓到**的原因是测试写法本身：原 `instructions.test.ts` 手写 `inject: ['systemPrompt']` 挂载行模块，**替被测对象补齐了它缺失的声明**——等于在测测试自己的正确性 | **L1**（用户界面实测，非推演） | 两道守卫：① `tests/row-inject.test.ts` 静态扫全仓行模块，`ctx.<service>` 访问必须落在该模块自己声明的 `inject` 里；② `scripts/probe-preset-rows.mjs` 在**新进程**里用**真 Cordis** 按行模块自己的声明逐行挂载 preset 里 13 个本包行。两道都已用「删掉声明 → 失败 → 还原 → 通过」双向验证（见 §12.9） |
+| E30 | §4.4 / 全仓行模块 | 隐含假设：①插件行的 `inject` 与代码一致（`tests/instructions.test.ts` 曾**替它补齐**声明）；②"声明了 inject"就等于"loader 读得到 inject" | **两层，且两层报错一字不差**。实测 2026-09-17（用户报「无法切换到「CV Research Orchestrator」」）：`src/instructions.ts` 的 `apply` 访问 `ctx.systemPrompt` 却没有 `inject`，Cordis 抛 `cannot get property "systemPrompt" without inject`——与 E19 同族的**爆炸半径**（错误发生在"切换 preset"上，用户看到的是"这个 preset 坏了"）。**第一层**是漏声明；补上 `export const inject` 后用户重启，**报错一模一样**——因为还有**第二层**：loader 每行都走 `unwrapExports(module) = module.default ?? module`，而该文件当时有 `export default apply`（普通函数），于是插件被解包成那个**函数**，命名 `inject` 被整个丢弃（8 个工具行没有 default 才侥幸有效；3 个服务行走的是 `static inject`）。E18-② 说的"有 default 或命名 apply 即可装载"**没有**说两种形态下 inject 读取位置相同——歧义即事故 | **L1**（用户界面实测两次，非推演） | ① `instructions.ts` 去掉 default，与工具行同形；② 静态守卫 `tests/row-inject.test.ts` 按 `unwrapExports` 规则算"有效声明"；③ 运行期守卫 `scripts/probe-preset-rows.mjs`（**新进程** + 真 Cordis + 同一条解包规则，逐行试挂 13 个本包行）。三者都用双向变异验证；详见 §12.9 |
 
 ---
 
@@ -1290,6 +1290,38 @@ cannot get property "systemPrompt" without inject
 却没有声明 `inject: ['systemPrompt']`。**根因一句话**：Cordis 要求按属性访问服务前先声明依赖，
 而这条规则是在**装载行**时才检查的——所以症状是"整个 preset 不可用"，不是"少了一行约定"。
 
+#### 这个事故有**两层**，第一层修完仍然照原样报错
+
+第一层：没声明。于是加上 `export const inject = ['systemPrompt']`——**重启后用户报"还是同样的错"**。
+这提醒了一件必须记住的事：**报错不变不等于没修，也不等于修错了，而是修到了另一层。**
+
+第二层（真正的坑）：**声明写在哪一侧，决定了它算不算数。** `cordis-plugin-loader` 每装载一行都走
+
+```js
+// lib/index.js:745
+unwrapExports(exports) {
+  exports = exports.default ?? exports   // ← 有 default 就只认 default
+  if (!exports.__esModule) return exports
+  return exports.default ?? exports
+}
+// Entry._init / Entry.update：
+plugin = this.loader.unwrapExports(await this.tree.import(this.options.name, ...))
+```
+
+本文件当时写着 `export default apply`（**一个普通函数**）。于是 loader 拿到的插件是那个**函数**，
+函数上没有 `inject`，`export const inject` 被整个丢弃——加了等于没加。三种形态对照：
+
+| 模块形态 | 解包后的插件 | inject 从哪读 | 本包实例 |
+| --- | --- | --- | --- |
+| 只有命名 `apply` / `inject` / `name` | 模块命名空间对象 | 命名 `inject` ✅ | 8 个工具行 |
+| `export default class extends Service` | 那个类 | `static inject` ✅ | 3 个服务行 |
+| `export default apply`（普通函数） | **那个函数** | 函数自身的 inject；**命名 `inject` 被丢弃** ❌ | `instructions.ts`（已改掉） |
+
+**修法**：`instructions.ts` 去掉 `export default`，与 8 个工具行同形（只留命名导出），
+并在文件里写明"不要在这里加 default"。E18-② 的原话——"必须有 `default`（插件类）**或**命名
+`apply` 导出"——说的是"两者之一即可被**装载**"，**没有**说"两种形态下 inject 的读取位置相同"。
+这条歧义正是事故的第二层。
+
 #### 为什么全套测试没抓到（这才是真正的教训）
 
 `tests/instructions.test.ts` 里有这么一段：
@@ -1307,18 +1339,23 @@ const fork = await app.plugin({
 **测试一旦承担了被测对象的责任，就测不出被测对象的失职。** 一切"插件声明契约"的测试都必须
 让被测对象以**它自己的声明**去挂载。
 
+第二条更隐蔽：**探针也犯了同一个错**。第一版探针从模块的命名导出取 `inject`，再手动塞给插件
+（`{ name, inject: declaredInject(mod), apply: mod.default }`）——于是"有 default 时命名 inject 被丢弃"
+这条 loader 语义又被探针补上了，`instructions.ts` 在探针里显示"挂载成功"。
+现在探针原样复刻 `unwrapExports`，只把 `module.default ?? module` 交给 Cordis，**不补任何声明**。
+
 #### 两道守卫（都已做"能失败"验证）
 
 | 守卫 | 形态 | 抓什么 | 双向验证 |
 | --- | --- | --- | --- |
-| `tests/row-inject.test.ts` | 静态：扫 `src/**/*.ts` 行模块，`ctx.<service>` 访问必须在该模块自己的 `inject` 里（`ctx.get('x')` 的可选依赖写法除外）；扫描前先剥注释 | 漏声明（**整份挂载失败**这一类） | 删掉 `instructions.ts` 的 `inject` → 2 条测试红；还原 → 绿 |
-| `scripts/probe-preset-rows.mjs` | 运行期：**新进程**里用**真 Cordis**、按每行**自己的声明**，逐行挂载 preset 里的 13 个本包行 | 漏声明 + 模块导入失败 + apply 抛异常 | 删掉 `lib/instructions.js` 的 `inject` → 该行抛 `cannot get property "systemPrompt" without inject`（**与生产报错逐字相同**），12/13；还原 → 13/13 |
+| `tests/row-inject.test.ts` | 静态：扫 `src/**/*.ts` 行模块，按 **`unwrapExports` 规则**算"有效声明"（有 default 时命名导出作废），再要求每个 `ctx.<service>` 访问都落在有效声明里；扫描前先剥注释 | 漏声明 + **声明写在会被丢弃的那一侧**（整份挂载失败这一类） | 删掉命名 `inject` → 红；把 `export default apply` 加回来 → 红（"有 default 导出的行模块"用例）；还原 → 绿 |
+| `scripts/probe-preset-rows.mjs` | 运行期：**新进程**里用**真 Cordis** + **loader 的 `unwrapExports`**，逐行挂载 preset 里 13 个本包行，自己不补任何声明 | 上述两类 + 模块导入失败 + apply 抛异常 | 删掉命名 `inject` → 该行抛 `cannot get property "systemPrompt" without inject`（**与生产报错逐字相同**）12/13；恢复 `export default apply` → 同样 12/13；修好后 → 13/13 |
 
 **为什么探针必须在独立进程**：宿主的 ESM 缓存按 URL 命中（E21）。宿主一旦导入过
 `lib/instructions.js`（哪怕当初 apply 失败），进程内再也读不到重建的版本——在宿主里复查只会
 重放旧模块的旧错误。探针因此自带 `?probe=N` 缓存击穿，并且只在**独立进程**里可信。
 
-#### 探针自己踩的坑（值得单独记一条）
+#### 探针踩的第二个坑：桩挂在哪
 
 第一版探针用 `app.provide('systemPrompt', stub)` 在**根上下文**上挂桩，结果**变异测试没红**：
 把 `inject` 删掉，那一行照样"挂载成功"。实测四种形状后定位：
@@ -1332,16 +1369,22 @@ const fork = await app.plugin({
 
 差别在 Cordis 的依赖检查走 **fiber 的 store**：挂在根上的值沿树可见，绕过了 `inject`；而生产里
 `systemPrompt` / `tools` 都由宿主行发布、preset 行是**另一棵子树**——正是后三种形状。
-**守卫必须被证明能失败；一个不会失败的守卫比没有守卫更糟**，因为它签发的是假保证。
-（这条与 E28 的 BOM 护栏、本次 §12.9 的两道守卫一样，都做了"故意弄坏 → 必须变红 → 还原 → 变绿"。）
+
+**两次踩坑是同一条教训的两次显形**：守卫只要在任何一处"替被测对象承担了责任"
+（补声明、补 loader 语义、把桩挂到无需求的位置），它就会安静地变成假保证。
+所以每个守卫都必须做"故意弄坏 → 必须变红 → 还原 → 变绿"，而且**变异点要覆盖每一种承责方式**。
 
 #### 与既有结论的关系
 
 - E19（一行坏掉拖垮整份挂载）在这里**第二次被证实**，且这次触发它的不是运行时错误而是**声明缺失**；
 - 这条属于"**接口契约类**"缺陷：类型系统看不见（`ctx.systemPrompt` 的类型来自 dsh 的类型扩展，
-  没有 inject 也照样通过 `tsc`），只有装载期或专门守卫能看见；
+  没有 inject 也照样通过 `tsc`），静态结构检查也看不见（`check-preset.mjs` 全绿），
+  只有装载期或专门守卫能看见；
 - 因此它被并入标准验证清单：`typecheck` → `test` → `check-preset.mjs` → **`probe-preset-rows.mjs`** →
   `check-tool-catalog.mjs` → smoke / spike。
+- 附带的方法论：**报错文本一字不变时，先怀疑"改动没到达生效位置"，而不是"这个方向不对"**。
+  本次两层根因的报错完全相同，区分它们的唯一办法是逐层验证（探针给出的 `inject=[]`
+  与生产的完整错误文本对上了，才算定位）。
 
 ---
 

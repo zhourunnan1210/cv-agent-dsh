@@ -58,8 +58,10 @@ describe('项目约定章节的渲染（纯函数）', () => {
 })
 
 describe('章节在真实 system prompt 上注册/卸载', () => {
-  it('模块自己声明了 systemPrompt（缺它 = 切换 preset 直接失败）', () => {
+  it('模块自己声明了 systemPrompt，且没有 default 导出（缺任一 = 切换 preset 直接失败）', () => {
     expect(instructions.inject).toContain('systemPrompt')
+    // loader 的 unwrapExports = `module.default ?? module`：有 default 就会丢掉命名 inject。
+    expect('default' in instructions, 'instructions.ts 又出现 default 导出：loader 会丢弃命名 inject').toBe(false)
   })
 
   it('注册后出现在装配结果里，卸载后消失（生命周期红线）', async () => {
@@ -76,7 +78,7 @@ describe('章节在真实 system prompt 上注册/卸载', () => {
       name: 'conventions',
       inject: [...instructions.inject],
       apply(ctx) {
-        instructions.default(ctx, { repoRoot: '.' })
+        instructions.apply(ctx, { repoRoot: '.' })
       },
     })
 

@@ -95,33 +95,42 @@ function makeStub(serviceName) {
   return {}
 }
 
-/** 行模块里声明的依赖（功能型插件用命名导出，服务类用 static inject）。 */
-function declaredInject(mod) {
-  if (Array.isArray(mod.inject)) return [...mod.inject]
-  const exported = mod.default
-  if (Array.isArray(exported?.inject)) return [...exported.inject]
-  return []
+/**
+ * loader 的导出解包规则 —— **必须是这一份，不能自己另写一套**。
+ *
+ * `cordis-plugin-loader` 的 `ModuleLoader.unwrapExports`（lib/index.js:745）：
+ *
+ *     unwrapExports(exports) {
+ *       if (isNullable(exports)) return exports
+ *       exports = exports.default ?? exports      // ← default 存在就**只认 default**
+ *       if (!exports.__esModule) return exports
+ *       return exports.default ?? exports
+ *     }
+ *
+ * 而每个 loader entry 装载时都走它（`Entry._init` / `Entry.update`：
+ * `plugin = this.loader.unwrapExports(await this.tree.import(...))`）。
+ *
+ * 后果：**模块一旦有 `default` 导出，命名导出的 `inject` 就被丢掉**。
+ * 所以"声明写在哪"是有区别的：
+ *   - 只有命名 `apply`（本包 8 个工具行）→ 插件是命名空间对象 → 读得到命名 `inject`；
+ *   - `default` 是服务类（本包 3 个服务行）→ 读 `static inject`；
+ *   - `default` 是**普通函数**（`instructions.ts`）→ 插件就是这个函数，
+ *     函数上没有 inject → 抛 `cannot get property ... without inject`，
+ *     **而旁边那个 `export const inject` 完全不起作用**。
+ *
+ * 本探针第一版是从命名导出取 inject、再手动塞给插件——又一次"守卫替被测对象
+ * 承担了责任"，于是这个真 bug 在探针里隐形。现在原样复刻上面这条规则。
+ */
+function unwrapExports(exports) {
+  if (exports === null || exports === undefined) return exports
+  const unwrapped = exports.default ?? exports
+  if (!unwrapped.__esModule) return unwrapped
+  return unwrapped.default ?? unwrapped
 }
 
-/**
- * 行模块 → Cordis 插件。
- *
- * E18-② 的原文是「必须有 `default`（插件类）**或**命名 `apply` 导出」——
- * 本包的 6 个工具行走的都是后者：模块里只有 `export const inject / export function apply`，
- * 于是 loader 把**模块命名空间对象本身**当插件交给 Cordis（它正好有 name/inject/apply 三个字段）。
- * 因此这里的回退不是宽容，而是**生产路径的原样**：命名导出就必须靠命名空间对象挂载，
- * 而命名空间对象读的也正好是命名 `inject`——漏声明依然会抛。
- */
-function asPlugin(mod, rowId) {
-  if (mod.default !== undefined) {
-    const exported = mod.default
-    const isClass = typeof exported === 'function' && /^class\s/.test(Function.prototype.toString.call(exported))
-    // 服务类：交给 Cordis 自己读 static inject / static Config。
-    if (isClass) return exported
-    return { name: rowId, inject: declaredInject(mod), apply: exported }
-  }
-  if (typeof mod.apply === 'function') return mod
-  return undefined
+/** 报告用：这一行的 inject 最终从哪个对象上被读到。 */
+function effectiveInject(plugin) {
+  return Array.isArray(plugin?.inject) ? [...plugin.inject] : []
 }
 
 // 服务行会在默认路径上真的建库/建状态文件 —— 把 cwd 切到临时目录，别碰真实数据。
@@ -168,27 +177,31 @@ for (const row of ourRows) {
     continue
   }
 
-  const injectList = declaredInject(mod)
-  const plugin = asPlugin(mod, row.id)
-  if (plugin === undefined) {
+  // 原样走 loader 的解包规则：**不自己补 inject**（补了就等于替被测对象负责）。
+  const plugin = unwrapExports(mod)
+  if (plugin === undefined || (typeof plugin.apply !== 'function' && typeof plugin !== 'function')) {
     failures.push({
       row: label,
       stage: 'export',
-      message: '既没有 default 导出，也没有命名 apply 导出（E18-②：loader 两者取其一，都没有就装不上）',
+      message: '解包后既不是函数也没有 apply（E18-②：loader 取 default 或命名 apply，都没有就装不上）',
     })
-    console.log(`✗ ${label}\n    阶段=export：既没有 default 也没有命名 apply`)
+    console.log(`✗ ${label}\n    阶段=export：解包后没有可用的 apply`)
     continue
   }
+  const injectList = effectiveInject(plugin)
 
   const app = new cordis.Context()
   // ⚠️ 服务必须由一个**宿主行**（root 的子 fiber）发布，不能用 `app.provide` 直接挂在
-  // root 上——实测（scripts 里的形状实验）：
+  // root 上——实测（本文件的历史版本踩过）：
   //   root.provide('systemPrompt') + 行 inject=[]  → **挂载成功**（探针抓不到任何东西）
   //   子 fiber 里 ctx.provide(...)  + 行 inject=[]  → 抛 cannot get property ...
   // 差别就是 Cordis 的依赖检查走的是 fiber 的 store：挂在 root 上的值沿树可见，
   // 绕过了 inject；而生产里 systemPrompt/tools 都由宿主行发布，preset 行是另一棵子树
   // ——正是后一种形状。探针若用前一种，就成了"永远不会失败"的假检查。
-  // （这正是本次事故的教训重复一次：守卫必须能失败，且必须证明它能失败。）
+  //
+  // 桩的名单取 'systemPrompt'/'tools' 与**解包后**那一行的 inject：即"宿主真实提供的东西"。
+  // 一行声明了但宿主没提供的服务，会让它停在 waiting（生产里表现为 inactiveRows），
+  // 不在这里判失败。
   for (const serviceName of new Set(['systemPrompt', 'tools', ...injectList])) {
     await app.plugin({
       name: `probe-host:${serviceName}`,

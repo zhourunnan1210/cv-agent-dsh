@@ -30,8 +30,20 @@ export const SECTION_NAME = 'cvagent:conventions'
  * **切换 preset 时**，用户看到的是「无法切换到 CV Research Orchestrator」，
  * 而不是"某一行漏了 inject"——与 E19 同类的爆炸半径。
  *
- * （`ProjectStateService` 用的是 `static inject`；功能型插件用命名 `inject` 导出，
- * loader 两者都认。`tests/row-inject.test.ts` 会静态扫出漏声明。）
+ * ⚠️⚠️ **而且这份声明必须落在 loader 真正读的那一侧**（同一次事故的第二层根因，2026-09-17 二次实测）：
+ * loader 装载每一行时都走 `cordis-plugin-loader` 的
+ *
+ *     plugin = unwrapExports(module)   // = module.default ?? module
+ *
+ * ——**模块一旦有 `default` 导出，命名导出的 `inject` 就被整个丢掉**。本文件原来写着
+ * `export default apply`（一个普通函数），于是 loader 拿到的插件是那个**函数**，
+ * 函数上没有 inject：`export const inject` 形同不存在，加了也照样抛同一个错。
+ *
+ * 现在的形态与 8 个工具行一致：**只导出命名 `apply` / `inject` / `name`、不写 default**，
+ * loader 解包后拿到的是模块命名空间对象，命名 `inject` 才会被读到。
+ * （3 个服务行走的是第三条路：`default` 是类，读 `static inject`。）
+ * `scripts/probe-preset-rows.mjs` 按同一条解包规则逐行试挂，`tests/row-inject.test.ts`
+ * 静态守住同一条规则——两者都不会再"替这一行补上它自己没写的声明"。
  */
 export const inject = ['systemPrompt']
 
@@ -82,5 +94,15 @@ export function apply(ctx: Context, config: Config = {}): void {
   })
 }
 
-/** 默认导出：loader 取 `module.default`（E18-②：只有命名导出会被拒）。 */
-export default apply
+// ⚠️ **不要在这里加 `export default apply`**（2026-09-17 事故的第二层根因）。
+//
+// 加了它，loader 的 `unwrapExports`（= `module.default ?? module`）就会把插件解析成
+// 这个**函数**，于是上面那份命名 `inject` 被丢弃，`apply` 里访问 `ctx.systemPrompt`
+// 立刻抛 `cannot get property "systemPrompt" without inject`，**整份 preset 挂载失败**。
+// 本文件此前的 `export default apply` 正是这么把一个"看起来已经声明好了"的行变成炸弹的。
+//
+// E18-② 的原话是"必须有 `default`（插件类）**或**命名 `apply` 导出"——
+// 它说的是"两者之一即可被装载"，没说"两种形态下 inject 的读取位置相同"。
+// 命名导出形态下，inject 必须也只能挂在命名导出上，且**不能同时存在 default**。
+// 与 8 个工具行保持同形；回归由 scripts/probe-preset-rows.mjs 与
+// tests/row-inject.test.ts 双向守住。
