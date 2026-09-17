@@ -629,7 +629,7 @@ dsh --profile cvspike --port 0 --no-open                              # 启动�
 | 2 | S6 端到端：`ask_user_question` 的门控呈递行为 | 同上 | 同上 |
 | 3 | S3 MinerU 本地吞吐 | 需要 4090 机器 + MinerU 部署 | 与 dsh 侧并行，不阻塞 |
 | 4 | S4 sqlite-vec 压测 | 需要选定 embedding 维度 | ✅ **已解决（2026-09-17，`scripts/spike-s4-retrieval.mjs`）**：结论是我们这个规模**不需要向量索引**（1000 条 × 768 维暴力全扫 **1.19ms/次**，Phase 3 的几百条更不在话下）；FTS5 可用，中文检索走 `tokenize='trigram'` 且**查询串须 ≥3 字符**（2 字中文查不到，实测边界）；`node:sqlite` 加载扩展需 `new DatabaseSync(path, { allowExtension: true })`（sqlite-vec 技术上可加载）。**剩下的是 embedding 来源决策，不是索引决策**（见 §9） |
-| 5 | S5 MCP 封装 | 依赖 core 层有可封装的接口 | Phase 1 后 |
+| 5 | S5 MCP 封装 | 依赖 core 层有可封装的接口 | ✅ **已完成（2026-09-17，见 §13）**：`@cv-research/mcp` 实现 MCP 协议层 + 三个工具（`kb_search` / `kb_summary` / `idea_score`）+ stdio 服务端；`packages/dsh-plugin` 新增 sqlite → core `KnowledgeBase` 的**只读适配器**（core 那份契约此前一直只是文档，没有实现）。验收脚本 `scripts/mcp-client-smoke.mjs` 以**另一个 MCP 客户端**的身份真起进程、真握手、真调用真实库 |
 | 6 | ai4scholar.net 真实调用与计费标定 | 需要 API key 与额度 | Phase 2 前（影响 §20 成本模型） |
 
 > ⚠️ 关于 GUI 宿主：bundle 的**装载链路**已用隔离 `DSH_HOME` 实证（§5.4），
@@ -1527,6 +1527,75 @@ pending_extraction 133`，`listUnextracted(5)` 给出的正是确定的工作清
 
 **一条方法论**：**判据在用的事实，总览里也应该有**。门控读 `parsed` 而总览不显示 `parsed`，
 就等于把"积压"藏在一个只有门控会看的角落——直到有人手动查库才发现。
+
+---
+
+## 13. S5 已交付：MCP 服务化封装（2026-09-17）
+
+§5.5 最后一项外部资源依赖（S5）落地。v1.2 §3.3 的原则是「不锁定单一 Agent 运行时」——
+能力写在 core、用法写在适配层，而 **MCP 就是那个跨平台的复用面**：
+dsh 之外的 agent 运行时（Claude Code / Codex / 自研客户端）能用同一套知识库与打分逻辑。
+
+### 13.1 交付物
+
+| 位置 | 内容 |
+| --- | --- |
+| `packages/mcp-server/src/protocol.ts` | MCP 协议层：`initialize` / `ping` / `tools/list` / `tools/call`，JSON-RPC 2.0 + 一行一消息 |
+| `packages/mcp-server/src/tools.ts` | 三个工具：`kb_search` / `kb_summary` / `idea_score`，实现对着 core 已声明的 `KnowledgeBase` / `IdeaScorer` |
+| `packages/mcp-server/src/server.ts` | stdio 服务端；`createMcpServer` 不做 I/O，`serve()` 才碰流（工具行为与传输行为可分开测） |
+| `packages/dsh-plugin/src/mcp/kb-adapter.ts` | **sqlite → core `KnowledgeBase` 的真实适配器**（新增 `cv-agent-dsh/mcp` 导出） |
+| `scripts/mcp-serve.mjs` | 可运行的 stdio 服务端（默认 `data/papers/metadata.db`） |
+| `scripts/mcp-client-smoke.mjs` | **S5 验收**：以另一个 MCP 客户端的身份起进程、握手、真调 |
+
+### 13.2 三个刻意的决定
+
+1. **不引 MCP SDK**：服务端要实现的方法只有四个，stdio 传输是"一行一个 JSON-RPC"。
+   为四个方法引一个运行时依赖，代价大于收益，也会让"跨平台复用面"多一个版本约束
+   （本包**只依赖 core**，这是设计约束）。
+2. **工具失败返回 `isError` 结果，不是 JSON-RPC error**：客户端需要看见失败原因并继续对话，
+   而不是拿到协议错误后不知所措。未知工具名则是**协议级**错误（重试无意义）——
+   两种失败的性质不同，处理也就不同。
+3. **适配器只读**：四个 `upsert*` 一律抛错并说明该走哪条路。写路径必须经过 dsh 工具层的
+   去重键与合并规则（§7.5.2）；让外部客户端直接写库，等于绕过那套规则、
+   制造"库里有两份同一条目"的分叉。
+
+### 13.3 两个顺带修掉的真问题
+
+- **core 的 `KnowledgeBase` 此前没有实现**：v1.2 §10 声明了它，dsh 侧的服务却是"按 store 取键"
+  的另一套形状。S5 需要 core 的接口，于是适配层补上了这一课——
+  **声明了却没实现的契约，和文档没有区别**。
+- **适配器的相似度口径与 dsh 侧强制一致**：`TriLibrary.search()` 只给命中行、不给分数
+  （FTS5 的 `rank` 跨库不可比），所以两边都用 core 的 `lexicalSimilarity` 现算。
+  同一个问题在会话里问和在 MCP 客户端里问，必须得到同一批候选、同一个分数——
+  测试直接拿 `lexicalSimilarity` 当基准断言，而不是写死数字。
+
+### 13.4 验收证据（`node scripts/mcp-client-smoke.mjs`）
+
+```
+✓ initialize：cv-research 0.1.0（协议 2025-06-18）
+✓ tools/list：kb_search, kb_summary, idea_score
+✓ kb_summary：counts { problems: 14, methods: 21, innovations: 69, failures: 67 } …
+✓ kb_search：problems=keyword_only(3)  methods=keyword_only(3)  failures=keyword_only(3)
+  命中示例：P011  score=0.015  未知生成模型内容的检测 (unseen generative models)
+✓ 入参校验：缺 query → isError 且点名字段
+✓ idea_score：未接裁判时明确拒绝（不是假分数）
+S5 MCP CLIENT SMOKE OK
+```
+
+两点值得注意：
+
+- **降级标记原样透出**（`mode=keyword_only`）。本部署没有 embedding（§9.3），
+  那就如实说自己是关键词检索——客户端据此判断结论可信度（v1.2 §19）。
+- **`idea_score` 在没有裁判时明确拒绝**，而不是给一个确定性算出来的"分数"。
+  打分里的语义判断必须由裁判完成（§11.8）；本进程不接模型，就不该假装能打分。
+
+### 13.5 遗留（不影响 S5 验收）
+
+- 独立进程里 `idea_score` 没有裁判：需要真打分时用 dsh 会话里的 `cvagent_idea_score`
+  （那边有 LLM 裁判）。若要让它独立可用，需要给 MCP 服务端注入一个 `IdeaScorer`
+  ——接口已经留好（`createMcpServer({ kb, scorer })`）。
+- embedding 来源仍是 §9.3 的待决项：一旦落地，`mode` 会自动从 `keyword_only` 变成 `vector`，
+  **本层的契约与阈值都不用改**（§11.5 的设计目的就是这个）。
 
 ---
 

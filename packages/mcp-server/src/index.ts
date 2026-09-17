@@ -1,64 +1,72 @@
 /**
- * @cv-research/mcp —— 核心能力的 MCP 服务化封装。
+ * @cv-research/mcp —— 核心能力的 MCP 服务化封装（v1.2 §12 的 Spike S5 落地）。
  *
- * ## 现状
+ * ## 它是什么
  *
- * **占位模块。** 本包的实质实现在 Phase 1 之后（v1.2 §12；勘误 §5.5 的
- * Spike S5：「把 `kb.search` + `idea.score` 两个接口包成 MCP，从 dsh 和
- * 另一个 MCP 客户端各调用一次」）。
+ * 把 core 已经声明好的两个平台无关契约——`KnowledgeBase`（知识库读写检索）与
+ * `IdeaScorer`（idea 打分）——通过 **MCP（Model Context Protocol）** 暴露出去，
+ * 让 dsh 之外的 agent 运行时（Claude Code / Codex / 自研客户端）也能用同一套
+ * 知识库与打分逻辑。
  *
- * 之所以先建包并导出真实符号，是为了让 workspace 的 `typecheck` / `build`
- * 门禁从第一天起就有意义——空 `src/` 会让 `tsc` 以 TS18003 失败，从而掩盖
- * 真正的编译错误。
+ * 这是 v1.2 §3.3「不锁定单一 Agent 运行时」的落点：能力在 core，用法在适配层，
+ * MCP 是那个跨平台的复用面。
+ *
+ * ## 现状（2026-09-17）
+ *
+ * | 能力 | 状态 |
+ * | --- | --- |
+ * | 协议层（`initialize` / `ping` / `tools/list` / `tools/call`） | ✅ 已实现（`protocol.ts`） |
+ * | 三个工具 `kb_search` / `kb_summary` / `idea_score` | ✅ 已实现（`tools.ts`） |
+ * | stdio 服务端（一行一个 JSON-RPC 消息） | ✅ 已实现（`server.ts`） |
+ * | 真实数据适配（sqlite → `KnowledgeBase` / `IdeaScorer`） | ⏳ 由宿主注入，见下 |
  *
  * ## 设计约束（提前记录，避免后续返工）
  *
- * 1. 本包只依赖 `@cv-research/core`，**不依赖 dsh / Cordis**——这是
- *    v1.2 §3.3「不锁定单一 Agent 运行时」的落点：MCP 是跨平台复用面。
+ * 1. 本包只依赖 `@cv-research/core`，**不依赖 dsh / Cordis**——跨平台复用面。
  * 2. 暴露的能力必须是 core 层已有的平台无关接口，不得为了 MCP 而在
  *    core 里新增 dsh 相关概念。
  * 3. 凭证同样走环境变量 / credentials 注入，密钥字面值不进入任何返回值
- *    （v1.2 §23 密钥卫生）。
+ *    （v1.2 §23 密钥卫生）。本层**不读环境变量**：需要密钥的实现由宿主注入。
+ * 4. 降级标记（`RetrievalResult.mode`）必须原样透给客户端，不得吞掉（v1.2 §19）。
+ *
+ * ## 怎么用
+ *
+ * ```ts
+ * import { createMcpServer } from '@cv-research/mcp'
+ *
+ * // kb / scorer 由宿主提供（core 的两个接口的任意实现）
+ * const server = createMcpServer({ kb, scorer })
+ * server.serve()               // 挂到 stdio，等待 MCP 客户端
+ * ```
  *
  * @module @cv-research/mcp
  */
 
-import type { KnowledgeBase, ScoringReport } from '@cv-research/core'
+export {
+  DEFAULT_PROTOCOL_VERSION,
+  JSON_RPC_ERRORS,
+  SUPPORTED_PROTOCOL_VERSIONS,
+  handleMessage,
+  jsonResult,
+  negotiateVersion,
+  textResult,
+  type JsonRpcFailure,
+  type JsonRpcRequest,
+  type JsonRpcResponse,
+  type JsonRpcSuccess,
+  type McpTool,
+  type McpToolDefinition,
+  type McpToolResult,
+  type ProtocolContext,
+  type ServerIdentity,
+} from './protocol.js'
 
-/**
- * 计划暴露为 MCP tool 的能力清单（Phase 1 后实现）。
- *
- * 依据 v1.2 §12 的 Spike S5：优先封装 `kb.search` 与 `idea.score`，
- * 因为这两个是「知识检索」与「Idea 决策」两层里最独立、最可复用的接口。
- */
-export const PLANNED_MCP_CAPABILITIES = [
-  {
-    name: 'kb_search',
-    purpose: '三库向量/关键词检索，供撞车分析调用',
-    core: 'KnowledgeBase.similarProblems / similarMethods',
-  },
-  {
-    name: 'kb_summary',
-    purpose: '三库摘要（计数 + top 条目标题），供 Idea 生成',
-    core: 'KnowledgeBase.summarize',
-  },
-  {
-    name: 'idea_score',
-    purpose: '撞车分析 + 四维打分，产出打分报告',
-    core: 'IdeaScorer.score',
-  },
-] as const
+export { createTools } from './tools.js'
+export {
+  MCP_SERVER_IDENTITY,
+  createMcpServer,
+  type McpServer,
+  type McpServerOptions,
+} from './server.js'
 
-/**
- * MCP 服务端工厂的签名（占位）。
- *
- * @param kb - 三库实现；由宿主（dsh 插件或独立进程）注入。
- * @returns 一个尚未注册到任何 MCP transport 的服务端句柄。
- */
-export type CreateMcpServer = (kb: KnowledgeBase) => Promise<{
-  readonly capabilities: typeof PLANNED_MCP_CAPABILITIES
-  readonly close: () => Promise<void>
-}>
-
-/** 打分报告的类型转发，便于 MCP 客户端只依赖本包即可获得返回类型。 */
-export type { ScoringReport }
+export type { IdeaCandidate, IdeaScorer, KnowledgeBase, ScoringReport } from '@cv-research/core'

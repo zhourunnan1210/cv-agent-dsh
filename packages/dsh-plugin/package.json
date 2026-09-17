@@ -63,7 +63,12 @@
     "./domain-tools": {
       "types": "./lib/domain/tools.d.ts",
       "default": "./lib/domain/tools.js"
-    },    "./idea-tools": {
+    },
+    "./mcp": {
+      "types": "./lib/mcp/kb-adapter.d.ts",
+      "default": "./lib/mcp/kb-adapter.js"
+    },
+    "./idea-tools": {
       "types": "./lib/scoring/tools.d.ts",
       "default": "./lib/scoring/tools.js"
     },
