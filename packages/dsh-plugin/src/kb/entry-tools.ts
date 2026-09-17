@@ -163,8 +163,9 @@ export function apply(ctx: Context): void {
   toolsRuntime.register(defineTool({
     name: KB_TOOLS.summary,
     description:
-      '知识库总览：论文库规模与来源通道、已解析/已提取篇数、三库条目数与最近更新时间。'
-      + '用于阶段推进判据（knowledge_building → idea_generation 的达标检查）与预算决策。',
+      '知识库总览：论文库规模与来源通道、**已解析/已提取/尚待提取**三个数字、四库条目数与最近更新时间。'
+      + '用于阶段推进判据（knowledge_building → idea_generation 的达标检查）、预算决策，'
+      + '以及判断"提取环节有没有积压"（`pending_extraction` 大就说明该批量补课了）。',
     parameters: {},
     output: {
       schema: {
@@ -173,7 +174,13 @@ export function apply(ctx: Context): void {
         properties: {
           papers: { type: 'integer', required: true, description: '论文库总条数' },
           papers_by_channel: { type: 'string', required: true, description: '按来源通道的条数（JSON 文本）' },
+          parsed: { type: 'integer', required: true, description: '已有全文解析（md_path 非空）的篇数' },
           extractions: { type: 'integer', required: true, description: '已完成的 Reader 结构化提取篇数' },
+          pending_extraction: {
+            type: 'integer',
+            required: true,
+            description: '已解析但还没做结构化提取的篇数——提取环节的待办量（>0 时可 cvagent_kb_extract 批量补）',
+          },
           entries_problems: { type: 'integer', required: true },
           entries_methods: { type: 'integer', required: true },
           entries_innovations: { type: 'integer', required: true },
@@ -189,7 +196,11 @@ export function apply(ctx: Context): void {
       return {
         papers: kb.count(),
         papers_by_channel: JSON.stringify(kb.countByChannel()),
+        // `parsed` 早就该在这里：判据用它在门控里把关，而总览却不给——
+        // 于是"已解析 154 / 已提取 21"这种系统性缺口要等到有人手动查库才会被发现。
+        parsed: kb.parsedCount(),
         extractions: kb.extractionCount(),
+        pending_extraction: kb.unextractedCount(),
         entries_problems: summary.counts.problems,
         entries_methods: summary.counts.methods,
         entries_innovations: summary.counts.innovations,

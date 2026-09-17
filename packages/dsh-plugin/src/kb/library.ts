@@ -173,6 +173,46 @@ export class PaperLibrary {
     return (this.db.raw.prepare('SELECT COUNT(*) AS c FROM papers').get() as { c: number }).c
   }
 
+  /**
+   * **已解析但还没有结构化提取**的论文（P4-2 批量提取用）。
+   *
+   * 为什么由库里选而不是让模型报 id：模型报 id 会漏、会重复、会记错；
+   * 而"哪些还没做"是一个**确定的查询**。库里还有 154 篇已解析未提取时，
+   * 这个差集就是待办清单本身。
+   *
+   * @param limit - 最多返回几篇（正数）；不传返回全部。
+   * @returns **新入库的优先**、再按 paper_id 稳定排序的 `{paper_id, title, md_path}`。
+   *
+   * 排序口径：`created_at DESC, paper_id`。为什么不纯按 paper_id：真实场景里
+   * "本批新检索进来的 30 篇"往往比历史存量更急（用户 2026-09-17 的批次说明就是这么排的），
+   * 而 paper_id 排序会把新批次打散在几百篇里。`created_at` 相同（同一批入库）时按 paper_id
+   * 兜底，保证**同一状态下每次调用的顺序一致**——确定性是这个工具能被放心批量跑的前提。
+   */
+  listUnextracted(limit?: number): Array<{ paper_id: string; title: string; md_path: string }> {
+    const sql = [
+      'SELECT p.paper_id AS paper_id, p.title AS title, p.md_path AS md_path',
+      'FROM papers p',
+      'LEFT JOIN paper_extractions e ON e.paper_id = p.paper_id',
+      "WHERE p.md_path IS NOT NULL AND p.md_path != '' AND e.paper_id IS NULL",
+      'ORDER BY p.created_at DESC, p.paper_id ASC',
+      limit === undefined ? '' : 'LIMIT ?',
+    ].filter((part) => part !== '').join(' ')
+    const rows = (limit === undefined
+      ? this.db.raw.prepare(sql).all()
+      : this.db.raw.prepare(sql).all(limit)) as Array<{ paper_id: string; title: string; md_path: string }>
+    return rows
+  }
+
+  /** 已解析未提取的**篇数**（不把整批行读进内存）。 */
+  countUnextracted(): number {
+    const row = this.db.raw.prepare([
+      'SELECT COUNT(*) AS c FROM papers p',
+      'LEFT JOIN paper_extractions e ON e.paper_id = p.paper_id',
+      "WHERE p.md_path IS NOT NULL AND p.md_path != '' AND e.paper_id IS NULL",
+    ].join(' ')).get() as { c: number }
+    return row.c
+  }
+
   /** 按来源通道计数（审计用）。 */
   countByChannel(): Record<string, number> {
     const rows = this.db.raw

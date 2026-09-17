@@ -17,6 +17,9 @@
  * - `--dry-run` 只做预算与名单打印，不提交。
  *
  * 前置：MINERU_TOKEN（.env.local 或环境）。mineru.net 国内直连，不走代理。
+ * ⚠ 运行本脚本无需 UTF-8 环境变量（它是纯 Node、按 UTF-8 写文件）；但**抓取**那一步
+ *   需要（见 `scripts/fetch-fulltext.mjs` 的 E34 说明）：Windows 下 Python 默认按 GBK
+ *   写 stdout，作者名含非 GBK 字符时整个 JSON 信封会写不出来，下载结果全丢。
  */
 
 import { basename, resolve } from 'node:path'

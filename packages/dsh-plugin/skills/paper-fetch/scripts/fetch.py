@@ -42,6 +42,31 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
+# LOCAL PATCH (E34) — 强制 stdout/stderr 使用 UTF-8，勿在升级上游时丢掉
+# ---------------------------------------------------------------------------
+# 事故：本机（Windows，控制台代码页 GBK）跑批量下载时，脚本在网上取完全部结果后
+# 于**写出 JSON 信封**这一步整体失败，一个结果都没落盘：
+#
+#     'gbk' codec can't encode character '\u0142' in position 10902: illegal multibyte sequence
+#
+# 机理：本脚本用 `ensure_ascii=False` 输出 JSON（这是对的——否则中文会被转义成
+# \uXXXX），但 Python 在 Windows 上按 locale 编码（GBK）写 stdout。作者名/标题里
+# 只要出现一个非 GBK 字符（如波兰语 'ł'），整个信封就写不出去，前功尽弃。
+#
+# 上游 0.15.1 **未修复**：它只是用 try/except 兜住异常、返回 internal_error，
+# 结果照样全丢（退出码 4）。因此这里就地强制 UTF-8。
+#
+# 升级上游时的核对动作：确认新版本 fetch.py 里仍有下面这段 reconfigure；
+# 若上游已修，则本段可删；若未修，必须保留，否则历史事故重现。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        # 非标准流（被测试替身替换 / 老解释器）时退回环境变量兜底：
+        # PYTHONUTF8=1 或 PYTHONIOENCODING=utf-8 由调用方设置。
+        pass
+
+# ---------------------------------------------------------------------------
 # Versioning
 # ---------------------------------------------------------------------------
 

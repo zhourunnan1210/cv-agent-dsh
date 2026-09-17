@@ -79,6 +79,10 @@ export interface KbApi {
   saveExtraction(extraction: PaperExtraction): void
   getExtraction(paperId: string): PaperExtraction | undefined
   extractionCount(): number
+  /** 已解析但未提取的论文（批量提取的待办来源，P4-2）。 */
+  listUnextracted(limit?: number): Array<{ paper_id: string; title: string; md_path: string }>
+  /** 已解析未提取的篇数。 */
+  unextractedCount(): number
   upsertEntry(store: StoreName, statement: string, sourcePapers: readonly string[], ext: ExtensionFields): UpsertEntryOutcome
   searchEntries(options?: EntrySearchOptions): KbEntry[]
   getEntry(store: StoreName, entryId: string): KbEntry | undefined
@@ -126,6 +130,22 @@ export class KbService extends Service implements KbApi {
 
   countByChannel(): Record<string, number> {
     return this.library.countByChannel()
+  }
+
+  /**
+   * 已解析但还没有结构化提取的论文（P4-2 批量提取的待办来源）。
+   *
+   * 存在的理由见 `library.ts#listUnextracted`：让模型自己报 id 一定会漏/重/错，
+   * 而这是确定的查询。库里长期存在"已解析 154 / 已提取 21"这种缺口时，
+   * 它就是提取环节的待办清单。
+   */
+  listUnextracted(limit?: number): Array<{ paper_id: string; title: string; md_path: string }> {
+    return this.library.listUnextracted(limit)
+  }
+
+  /** 已解析未提取的篇数（判据与摘要用）。 */
+  unextractedCount(): number {
+    return this.library.countUnextracted()
   }
 
   saveExtraction(extraction: PaperExtraction): void {

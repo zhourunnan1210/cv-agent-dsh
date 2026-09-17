@@ -100,6 +100,21 @@ function renderJson(_args: unknown, value: unknown) {
   return [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }]
 }
 
+/**
+ * 单篇提取结果。
+ *
+ * 形状由工具的 outputSchema 决定：`status` 区分成功/失败，失败时**只有** `error`，
+ * 成功时**只有** `extraction_quality` + `summary`——避免出现"看起来成功但摘要是空的"。
+ */
+interface ExtractResult {
+  paper_id: string
+  title: string
+  status: 'ok' | 'failed'
+  extraction_quality?: string
+  summary?: string
+  error?: string
+}
+
 export function apply(ctx: Context): void {
   const kb: KbService = ctx.kb
   const toolsRuntime = ctx.tools
@@ -108,33 +123,47 @@ export function apply(ctx: Context): void {
   toolsRuntime.register(defineTool({
     name: KB_TOOLS.extract,
     description:
-      '把一篇论文的全文解析产物交给一个上下文隔离的 Reader 子代理做结构化提取（§5.3 十字段），'
-      + '结果写入论文库。前置：该论文已解析（papers.md_path 非空）。'
-      + '子代理只有文件读取工具；主 Agent 只收到结构化结果，全文不进主上下文。',
+      '把论文的全文解析产物交给**上下文隔离**的 Reader 子代理做结构化提取（§5.3 十字段），结果写入论文库。'
+      + '两种用法：① 传 paper_id —— 提取指定那一篇（已提取过的会覆盖刷新）；'
+      + '② 不传 paper_id、传 limit —— 由**库自己**挑出"已解析但还没提取"的若干篇依次处理（**批量补课**，'
+      + '适用于库里积压着一批已解析未提取的论文时，不必逐篇调用）。'
+      + '前置：论文已解析（md_path 非空）。子代理只有文件读取工具；主 Agent 只收到结构化结果，全文不进主上下文。'
+      + '**单篇失败不影响其余**：每篇的结果分别回传，部分成功是正常结果。',
     parameters: {
-      paper_id: { type: 'string', required: true, description: '论文 paper_id（DOI/arXiv/local:<key>）' },
+      paper_id: { type: 'string', description: '论文 paper_id（DOI/arXiv/local:<key>）；给了就只处理这一篇' },
+      limit: { type: 'integer', description: '批量模式：本次最多处理几篇"已解析未提取"的论文（1–10，默认 3）。给了 paper_id 时忽略' },
     },
     output: {
       schema: {
         type: 'object',
         additionalProperties: false,
         properties: {
-          paper_id: { type: 'string', required: true },
-          extraction_quality: { type: 'string', required: true },
-          summary: { type: 'string', required: true, description: '提取结果一句话摘要（问题+方法）' },
+          total: { type: 'integer', required: true, description: '本次实际处理的篇数' },
+          succeeded: { type: 'integer', required: true },
+          failed: { type: 'integer', required: true },
+          results: {
+            type: 'array',
+            required: true,
+            description: '逐篇结果（顺序与处理顺序一致）',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                paper_id: { type: 'string', required: true },
+                title: { type: 'string', required: true },
+                status: { type: 'string', required: true, enum: ['ok', 'failed'] },
+                extraction_quality: { type: 'string', description: '成功时为 full_text / abstract_only' },
+                summary: { type: 'string', description: '成功时的一句话摘要（问题｜方法）' },
+                error: { type: 'string', description: '失败时的原因（该篇独立失败，不影响其余）' },
+              },
+            },
+          },
+          remaining: { type: 'integer', required: true, description: '本次之后，库里还剩多少篇「已解析未提取」——据此决定要不要接着调' },
         },
       },
       render: renderJson,
     },
     async execute(args, exec) {
-      const paperId = String(args.paper_id)
-      const paper = kb.getPaper(paperId)
-      if (paper === undefined) {
-        throw new Error(`论文不存在：${paperId}（先用 cvagent_kb_import_paper 入库）`)
-      }
-      if (paper.md_path === undefined) {
-        throw new Error(`论文尚未解析（md_path 为空）：先跑落盘流水线（scripts/parse-one.mjs），或改走 abstract_only 通道`)
-      }
       if (subagents === undefined) {
         throw new Error('subagents 服务不可用：无法委派 Reader 子代理')
       }
@@ -142,42 +171,99 @@ export function apply(ctx: Context): void {
         throw new Error('调用缺少 agent 上下文：无法建立委派父子关系')
       }
 
-      const mdAbsolute = resolve(process.cwd(), paper.md_path)
-      const prompt = [
-        `论文：${paper.title}`,
-        `paper_id：${paperId}`,
-        `全文 Markdown 绝对路径：${mdAbsolute}`,
-        `请读入该文件，按 outputSchema 完成十字段结构化提取。`,
-      ].join('\n')
+      // ── 选片：显式一篇 / 库里挑一批 ─────────────────────────────────────
+      let targets: Array<{ paper_id: string; title: string; md_path: string }>
+      if (args.paper_id !== undefined) {
+        const paperId = String(args.paper_id)
+        const paper = kb.getPaper(paperId)
+        if (paper === undefined) {
+          throw new Error(`论文不存在：${paperId}（先用 cvagent_kb_import_paper 入库）`)
+        }
+        if (paper.md_path === undefined) {
+          throw new Error(`论文尚未解析（md_path 为空）：先跑落盘流水线（scripts/parse-one.mjs），或改走 abstract_only 通道`)
+        }
+        targets = [{ paper_id: paperId, title: paper.title, md_path: paper.md_path }]
+      } else {
+        const limit = Math.min(10, Math.max(1, args.limit === undefined ? 3 : Number(args.limit)))
+        targets = kb.listUnextracted(limit)
+        if (targets.length === 0) {
+          throw new Error(
+            '没有"已解析但未提取"的论文：要么都提取过了，要么还没有解析产物。'
+            + '可用 cvagent_kb_summary 看「已解析 / 已提取」两个数字，或先跑解析流水线。',
+          )
+        }
+      }
 
-      const run = await subagents.start('spawn', {
-        signal: exec.signal,
-        parent: exec.agent,
-        label: `reader:${paperId}`,
-        prompt: [{ type: 'text', text: prompt }],
-        toolFilter: READER_TOOL_FILTER,
-        persona: READER_PERSONA,
-        outputSchema: extractionOutputSchema(),
-        maxDepth: SUBAGENT_MAX_DEPTH,
-      })
+      // ── 逐篇处理：单篇失败被收起成该项的 error，不打断整批 ────────────────
+      const results: ExtractResult[] = []
+      for (const target of targets) {
+        const mdAbsolute = resolve(process.cwd(), target.md_path)
+        const prompt = [
+          `论文：${target.title}`,
+          `paper_id：${target.paper_id}`,
+          `全文 Markdown 绝对路径：${mdAbsolute}`,
+          `请读入该文件，按 outputSchema 完成十字段结构化提取。`,
+        ].join('\n')
 
-      try {
-        const result = await run.result
-        if (result.structured === undefined) {
-          throw new Error(`Reader 子代理未按契约应答（stopReason=${result.stopReason}${result.diagnostic ? `，${result.diagnostic}` : ''}）`)
+        let run
+        try {
+          run = await subagents.start('spawn', {
+            signal: exec.signal,
+            parent: exec.agent,
+            label: `reader:${target.paper_id}`,
+            prompt: [{ type: 'text', text: prompt }],
+            toolFilter: READER_TOOL_FILTER,
+            persona: READER_PERSONA,
+            outputSchema: extractionOutputSchema(),
+            maxDepth: SUBAGENT_MAX_DEPTH,
+          })
+        } catch (error) {
+          results.push({
+            paper_id: target.paper_id,
+            title: target.title,
+            status: 'failed',
+            error: `委派失败：${error instanceof Error ? error.message : String(error)}`,
+          })
+          continue
         }
-        const extraction = coerceExtraction(paperId, result.structured)
-        if (extraction === undefined) {
-          throw new Error('Reader 子代理返回的结构化结果形状非法（缺 problem_statement 或 method_summary）')
+
+        try {
+          const result = await run.result
+          if (result.structured === undefined) {
+            throw new Error(`Reader 子代理未按契约应答（stopReason=${result.stopReason}${result.diagnostic ? `，${result.diagnostic}` : ''}）`)
+          }
+          const extraction = coerceExtraction(target.paper_id, result.structured)
+          if (extraction === undefined) {
+            throw new Error('Reader 返回的结构化结果形状非法（缺 problem_statement 或 method_summary）')
+          }
+          kb.saveExtraction(extraction)
+          results.push({
+            paper_id: target.paper_id,
+            title: target.title,
+            status: 'ok',
+            extraction_quality: extraction.extraction_quality,
+            summary: `${extraction.problem_statement.slice(0, 80)}｜${extraction.method_summary.slice(0, 80)}`,
+          })
+        } catch (error) {
+          results.push({
+            paper_id: target.paper_id,
+            title: target.title,
+            status: 'failed',
+            error: error instanceof Error ? error.message : String(error),
+          })
+        } finally {
+          await run.dispose()
         }
-        kb.saveExtraction(extraction)
-        return {
-          paper_id: paperId,
-          extraction_quality: extraction.extraction_quality,
-          summary: `${extraction.problem_statement.slice(0, 80)}｜${extraction.method_summary.slice(0, 80)}`,
-        }
-      } finally {
-        await run.dispose()
+      }
+
+      const succeeded = results.filter((item) => item.status === 'ok').length
+      return {
+        total: results.length,
+        succeeded,
+        failed: results.length - succeeded,
+        results,
+        // 让"还剩多少"可见：模型不必自己算，也就能自己决定要不要接着调。
+        remaining: kb.unextractedCount(),
       }
     },
   }))
