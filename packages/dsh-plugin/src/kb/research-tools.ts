@@ -24,6 +24,7 @@ import type { ExtensionFields, PaperExtraction, PaperRecord, StoreName } from '@
 
 import { ASTA_TOOL_NAMES, KB_TOOLS, SCOUT_ALLOWED_TOOLS } from '../tools/names.js'
 import type { KbService } from './service.js'
+import { SUBAGENT_MAX_DEPTH } from '../subagent.js'
 import type { SubagentLike } from '../subagent.js'
 
 export const name = 'cvagent-kb-research'
@@ -277,7 +278,7 @@ export function apply(ctx: Context): void {
         toolFilter: SCOUT_FILTER,
         persona: SCOUT_PERSONA,
         outputSchema: scoutOutputSchema(),
-        maxDepth: 0,
+        maxDepth: SUBAGENT_MAX_DEPTH,
       })
       try {
         const result = await run.result
@@ -507,7 +508,7 @@ export function apply(ctx: Context): void {
         toolFilter: ANALYST_FILTER,
         persona: ANALYST_PERSONA,
         outputSchema: analystOutputSchema(),
-        maxDepth: 0,
+        maxDepth: SUBAGENT_MAX_DEPTH,
       })
 
       let proposals: ReturnType<typeof coerceEntryProposals>

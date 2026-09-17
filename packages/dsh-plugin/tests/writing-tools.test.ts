@@ -149,7 +149,9 @@ describe('cvagent_write_draft（上下文组装 + Writer 委派）', () => {
     const [call] = env.startCalls
     expect(call.name).toBe('spawn')
     expect(call.request.parent).toBe(ROOT_AGENT)
-    expect(call.request.maxDepth).toBe(0)
+    // E33 回归：深度上限是「子代理的绝对层级上限」，必须 ≥ 1（写 0 会让任何委派都失败）。
+    // 真正的判据由 tests/subagent-depth.test.ts 调真 SDK 的 resolveChildDepth 校验。
+    expect(call.request.maxDepth).toBeGreaterThanOrEqual(1)
     const prompt = String(call.request.prompt[0].text)
 
     // 领域口径来自**已冻结 pack**（含评审人）

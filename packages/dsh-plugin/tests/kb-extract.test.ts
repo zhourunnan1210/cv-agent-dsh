@@ -3,7 +3,7 @@
  *
  * 用**假 subagents 提供者**验证委派契约（不跑真实 LLM）：
  * - 委派请求形状：provider 'spawn'、parent=调用 agent、toolFilter 只含 read、
- *   persona 为 Reader、outputSchema 为 PaperExtraction 编译、maxDepth 0；
+ *   persona 为 Reader、outputSchema 为 PaperExtraction 编译、maxDepth 乐观可派；
  * - 结构化结果合规 → saveExtraction 落库；
  * - 缺 paper / 未解析 / 无 subagents / 无 agent / 结果不合规 → 明确 isError。
  *
@@ -144,7 +144,9 @@ describe('cvagent_kb_extract（Reader 子代理委派，假 subagents）', () =>
     expect(call.request.parent).toBe(ROOT_AGENT)
     expect(call.request.toolFilter).toEqual({ allow: ['read'] })
     expect(call.request.persona).toContain('Reader 子代理')
-    expect(call.request.maxDepth).toBe(0)
+    // E33 回归：深度上限是「子代理的绝对层级上限」，必须 ≥ 1（写 0 会让任何委派都失败）。
+    // 真正的判据由 tests/subagent-depth.test.ts 调真 SDK 的 resolveChildDepth 校验。
+    expect(call.request.maxDepth).toBeGreaterThanOrEqual(1)
     expect(call.request.outputSchema.required).toContain('problem_statement')
     expect(call.request.label).toBe('reader:10.1000/example')
 

@@ -19,6 +19,7 @@ import { normalizeTitle, type IdeaCandidate } from '@cv-research/core'
 
 import { IDEA_TOOLS } from '../tools/names.js'
 import type { IdeaScoreService } from './service.js'
+import { SUBAGENT_MAX_DEPTH } from '../subagent.js'
 import type { SubagentLike } from '../subagent.js'
 
 export const name = 'cvagent-idea-tools'
@@ -263,7 +264,7 @@ export function apply(ctx: Context): void {
             toolFilter: GENERATOR_TOOL_FILTER,
             persona: GENERATOR_PERSONA,
             outputSchema: ideaOutputSchema(),
-            maxDepth: 0,
+            maxDepth: SUBAGENT_MAX_DEPTH,
           })
           try {
             const result = await run.result
@@ -416,7 +417,7 @@ export function apply(ctx: Context): void {
         toolFilter: JUDGE_TOOL_FILTER,
         persona: JUDGE_PERSONA,
         outputSchema: judgeOutputSchema(),
-        maxDepth: 0,
+        maxDepth: SUBAGENT_MAX_DEPTH,
       })
 
       let judged

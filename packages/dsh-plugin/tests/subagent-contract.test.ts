@@ -166,4 +166,34 @@ describe('子代理委派契约（漏 signal = 运行期炸 reading "aborted"）
       + offenders.join('\n'),
     ).toEqual([])
   })
+
+  /**
+   * E33：`maxDepth` 是**子代理的绝对层级上限**，写死小数字会让委派系统性失败。
+   *
+   * 这条静态扫**全部**调用点（不止有请求形状断言的 4 个工具），把字面量 0 挡在源码层；
+   * 语义侧的判据由 `tests/subagent-depth.test.ts` 调真 SDK 的 `resolveChildDepth` 校验。
+   */
+  it('委派调用点的 maxDepth 不许是字面量 0（写死即整条链路阻断）', async () => {
+    const files = await listSourceFiles(SRC)
+    const offenders = []
+    let sites = 0
+    for (const file of files) {
+      const text = await readFile(file, 'utf8')
+      for (const match of text.matchAll(/maxDepth:\s*([^,\n]+),/g)) {
+        sites += 1
+        const value = match[1].trim()
+        const line = text.slice(0, match.index).split('\n').length
+        // 数字字面量必须 ≥ 1：子代理最小也是第 1 层（详见 src/subagent.ts 的 SUBAGENT_MAX_DEPTH）
+        if (/^\d+$/.test(value) && Number(value) < 1) {
+          offenders.push(`${relative(REPO_SRC_ROOT, file)}:${line}  maxDepth: ${value}`)
+        }
+      }
+    }
+    expect(sites, '没扫到任何 maxDepth 调用点：判定条件写错了').toBeGreaterThanOrEqual(6)
+    expect(
+      offenders,
+      'maxDepth 写死为 0 会让**任何**委派都抛 "subagent depth 1 exceeds maxDepth 0"（E33）：\n'
+      + offenders.join('\n'),
+    ).toEqual([])
+  })
 })

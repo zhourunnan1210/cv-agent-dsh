@@ -67,9 +67,44 @@ export interface SubagentStartRequest {
   readonly persona?: string
   /** 结构化输出契约；给了就必须按契约应答。 */
   readonly outputSchema?: unknown
-  /** 委派深度上限；0 表示子代理不能再委派。 */
+  /**
+   * **子代理自己的绝对层级上限**（不是"还能再往下派几层"）。
+   *
+   * ⚠️ 这个字段被误解过一次，代价是**整条委派链路阻断**（2026-09-17，E33）：
+   * 我们写 `maxDepth: 0`，本意是"子代理不许再派孩子"，而 SDK 读作
+   * "子代理的绝对层级必须 ≤ 0"——子代理最小也是第 1 层，于是**任何**委派都失败：
+   *
+   *     Error: subagent depth 1 exceeds maxDepth 0
+   *
+   * 真源码（`@deepseek-ai/dsh-subagent/lib/index.js:432`）：
+   *
+   *     function resolveChildDepth(parent, maxDepth) {
+   *       const childDepth = delegationDepthOf(parent) + 1
+   *       if (maxDepth !== void 0 && childDepth > maxDepth) throw new SubagentDepthError(...)
+   *     }
+   *
+   * 也就是：**根会话（层级 0）派子代理 = 第 1 层**，所以任何可用的取值都必须 ≥ 1。
+   * 取值用 {@link SUBAGENT_MAX_DEPTH}，别写字面量。
+   */
   readonly maxDepth?: number
 }
+
+/**
+ * 我们发起委派时给子代理的深度上限。
+ *
+ * 取 **3**，与部署自带的 `subagent` 工具默认值一致
+ * （`@deepseek-ai/dsh-tool-subagent/lib/index.js:269`：`z...default(3)`），理由：
+ *
+ * - 必须 ≥ 1，否则根会话委派直接失败（E33 的事故值就是 0）；
+ * - 取 1 只够"根会话派一层"：一旦编排 Agent 自己也是别人的子代理（层级 1），
+ *   它派出的 worker 就是第 2 层，会被自己的上限挡住——同样是"系统性委派失败"；
+ * - 取 3 容忍编排层被嵌套两层，同时仍是一个**显式上限**而不是无限递归。
+ *
+ * 真正保证"worker 不再往下派"的不是这个数字，而是每个角色的 `toolFilter`：
+ * 子代理的工具面里根本没有 `subagent` 工具（见 `names.ts` 的角色白名单）。
+ * 深度上限是第二道保险，不该做成第一道。
+ */
+export const SUBAGENT_MAX_DEPTH = 3
 
 export interface SubagentResultLike {
   readonly structured?: unknown

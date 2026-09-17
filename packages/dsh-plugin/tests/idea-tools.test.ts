@@ -176,14 +176,16 @@ describe('Idea 族工具（真实 ToolRuntime + 假 subagents）', () => {
     // 'duplicate' 与 'empty' 必须区分：前者是"想出来了但别人已经说过"，后者是"确实没方向"
     expect(result.value.per_lens.map((item) => item.status)).toEqual(['ok', 'duplicate', 'empty'])
 
-    // 委派契约：provider=spawn、parent=ROOT、工具面只给 kb 只读检索、outputSchema 为候选列表、maxDepth=0
+    // 委派契约：provider=spawn、parent=ROOT、工具面只给 kb 只读检索、outputSchema 为候选列表、maxDepth 乐观可派
     const [first] = env.startCalls
     expect(first.name).toBe('spawn')
     expect(first.request.parent).toBe(ROOT_AGENT)
     expect(first.request.toolFilter).toEqual({ allow: ['cvagent_kb_search', 'cvagent_kb_summary'] })
     expect(first.request.persona).toContain('Idea Generator')
     expect(first.request.outputSchema.properties.ideas.type).toBe('array')
-    expect(first.request.maxDepth).toBe(0)
+    // E33 回归：深度上限是「子代理的绝对层级上限」，必须 ≥ 1（写 0 会让任何委派都失败）。
+    // 真正的判据由 tests/subagent-depth.test.ts 调真 SDK 的 resolveChildDepth 校验。
+    expect(first.request.maxDepth).toBeGreaterThanOrEqual(1)
     expect(String(first.request.prompt[0].text)).toContain('音频深伪检测')
     expect(String(first.request.prompt[0].text)).toContain('failures') // 提示先查失败库
   })

@@ -28,6 +28,7 @@ import type { PaperExtraction, ExtractionQuality } from '@cv-research/core'
 
 import { KB_TOOLS } from '../tools/names.js'
 import type { KbService } from './service.js'
+import { SUBAGENT_MAX_DEPTH } from '../subagent.js'
 import type { SubagentLike } from '../subagent.js'
 
 export const name = 'cvagent-kb-extract-tool'
@@ -157,7 +158,7 @@ export function apply(ctx: Context): void {
         toolFilter: READER_TOOL_FILTER,
         persona: READER_PERSONA,
         outputSchema: extractionOutputSchema(),
-        maxDepth: 0,
+        maxDepth: SUBAGENT_MAX_DEPTH,
       })
 
       try {

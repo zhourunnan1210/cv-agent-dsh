@@ -147,7 +147,9 @@ describe('cvagent_kb_scout / import_papers / analyze（真实 ToolRuntime + 假 
     const [call] = env.startCalls
     expect(call.name).toBe('spawn')
     expect(call.request.parent).toBe(ROOT_AGENT)
-    expect(call.request.maxDepth).toBe(0)
+    // E33 回归：深度上限是「子代理的绝对层级上限」，必须 ≥ 1（写 0 会让任何委派都失败）。
+    // 真正的判据由 tests/subagent-depth.test.ts 调真 SDK 的 resolveChildDepth 校验。
+    expect(call.request.maxDepth).toBeGreaterThanOrEqual(1)
     expect(call.request.persona).toContain('Scout')
     expect(call.request.outputSchema.properties.papers.type).toBe('array')
     // E31 回归：委派请求必须带 signal（缺它 → 宿主 provider 抛 reading 'aborted'）

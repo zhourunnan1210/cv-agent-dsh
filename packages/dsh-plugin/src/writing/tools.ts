@@ -35,6 +35,7 @@ import type {} from '@deepseek-ai/dsh-tools'
 
 import { IDEA_TOOLS } from '../tools/names.js'
 import type { KbService } from '../kb/service.js'
+import { SUBAGENT_MAX_DEPTH } from '../subagent.js'
 import type { SubagentLike } from '../subagent.js'
 
 export const name = 'cvagent-write-draft'
@@ -296,7 +297,7 @@ export function apply(ctx: Context, config: Config = {}): void {
         toolFilter: WRITER_TOOL_FILTER,
         persona: WRITER_PERSONA,
         outputSchema: writerOutputSchema(),
-        maxDepth: 0,
+        maxDepth: SUBAGENT_MAX_DEPTH,
       })
 
       let structured: Record<string, unknown>
