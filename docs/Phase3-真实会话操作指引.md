@@ -40,6 +40,13 @@ sub_domain 写一句话，keywords 写 3–8 个（中英兼顾、含同义表�
 **为什么必须先做**：知识阶段的判据里，`sub_domain` 未确定则**一律不放行**（这是刻意的——
 检索范围没定就谈"知识建成"没有意义）。
 
+> ⚠️ **顺序很重要**：落盘范围的那一刻会记下**口径基线**（当时的存量快照）——见
+> 勘误 §12.11 的方案 C。库里已有的语料**不会**帮你过门控，门控只认"落盘之后新增"。
+> 所以**先落范围、再检索入库**；反过来做（先攒语料后落范围）会让基线等于语料本身，
+> `advance` 会一直报 `论文库新增 0/100 篇（存量 390，基线 390）`。
+> 这不是故障，是刻意语义；真要重新计时，就再调一次 `cvagent_scope_set`（**改一个关键词**
+> 即可触发重新记基线）。
+
 ---
 
 ## 2. 检索入库（`cvagent_kb_scout` → `cvagent_kb_import_papers`）
@@ -167,6 +174,8 @@ node scripts/check-md-paths.mjs            # 完整性：md_path 是否都能读
 | 现象 | 可能原因 | 处理 |
 | --- | --- | --- |
 | cv-research 会话里一个 `cvagent_*` 都没有 | preset 挂载失败（一行坏掉全份挂载失败，E19/E30） | ① `node scripts/check-preset.mjs` 看结构；② `node scripts/probe-preset-rows.mjs` 在新进程里逐行试挂（**能给出与宿主逐字相同的报错**，如 `cannot get property "systemPrompt" without inject`）；③ 看宿主窗口的报错 |
+| `advance` 报「论文库**新增** 0/100（存量 390，基线 390）」 | **不是故障**：口径基线在起作用（方案 C），存量不算数 | 想让新语料计入，先 `cvagent_scope_set` 落下本课题范围再检索；或改一个关键词重新记基线 |
+| Scout 报 `Cannot read properties of undefined (reading 'aborted')` | 委派请求漏传必填的 `signal`（E31） | 已修；若复现请连同 `node packages/dsh-plugin/tests/names.test.mjs` 一起回报——`tests/subagent-contract.test.ts` 会守住调用点 |
 | 有 `cvagent_*` 但没有 `mcp__asta__*` | 前置缺失（key / 代理 / `NODE_USE_ENV_PROXY`） | `start-dsh-web.ps1 -DryRun` 逐项检查后重启宿主 |
 | 改了 preset/插件但行为没变 | 运行中的宿主缓存模块与 exports（E21） | 重启宿主 |
 | `advance` 永远不达标 | 判据读的是真实数字：`sub_domain` / 论文 / 解析 / 提取 / 四库条目 | 看 `facts_json` 对号入座 |

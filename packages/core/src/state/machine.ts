@@ -88,6 +88,13 @@ export interface ProjectState {
   readonly sub_domain: string | null
   /** 关键词组（用于检索扩展；缺省时用 Domain Pack 的 `lexicon.query_expansion`）。 */
   readonly keywords: readonly string[]
+  /**
+   * 换课题时的存量快照（方案 C）。`null` = 沿用绝对口径。
+   *
+   * 为什么需要它：语料跨课题沿用，而判据读绝对总量会让"知识建成"被历史存量顶过。
+   * 记下基线后，知识阶段的判据只认**本课题新增**。
+   */
+  readonly scope_baseline?: ScopeBaseline | null
   readonly stages: Readonly<Partial<Record<Stage, StageRecord>>>
   readonly pending_gate: PendingGate | null
   readonly resolved_gates: readonly ResolvedGate[]
@@ -239,10 +246,28 @@ export function createProjectState(projectId: string, mode: Mode | null = null):
  *
  * 纯函数。`keywords` 去重去空、保留顺序；`sub_domain` 去空白，空串视为 `null`
  * （"没填"与"填了空字符串"必须归一到同一个状态，否则下游要判两次）。
+ *
+ * ## 口径基线（用户 2026-09-17 裁定，方案 C）
+ *
+ * 换课题时，语料是**沿用**的（去重、引用、已解析全文都要用），但门控判据读的是绝对总量
+ * ——于是"知识建成"会被上一个课题的存量直接顶过，门控变成形式。
+ *
+ * 解法：范围**真的变了**时，记下此刻的存量快照（`scope_baseline`），此后知识阶段的判据
+ * 只认**相对基线的增量**。范围没变（重复落盘同一范围）则**不动**基线——否则每次
+ * `scope_set` 都会把进度清零。
+ *
+ * 快照是**惰性求值**的：`snapshot` 只在范围确实变化时才被调用，避免每次落盘都去查库。
+ *
+ * @param state - 当前状态。
+ * @param scope - 本次要落盘的范围（字段缺省 = 保持原值）。
+ * @param now - ISO 时间戳（注入以便测试）。
+ * @param snapshot - 存量快照供应函数；仅在范围变化时调用。
  */
 export function setResearchScope(
   state: ProjectState,
   scope: { readonly sub_domain?: string | null; readonly keywords?: readonly string[] },
+  now: string = new Date().toISOString(),
+  snapshot?: () => ScopeBaselineCounts,
 ): ProjectState {
   const subDomain = scope.sub_domain === undefined
     ? state.sub_domain
@@ -250,7 +275,39 @@ export function setResearchScope(
   const keywords = scope.keywords === undefined
     ? state.keywords
     : [...new Set(scope.keywords.map((item) => item.trim()).filter((item) => item !== ''))]
-  return { ...state, sub_domain: subDomain, keywords }
+
+  const changed = subDomain !== state.sub_domain || !sameKeywords(keywords, state.keywords)
+  if (!changed) return { ...state, sub_domain: subDomain, keywords }
+
+  const baseline: ScopeBaseline | null = snapshot === undefined
+    ? null
+    : { recorded_at: now, sub_domain: subDomain, keywords, ...snapshot() }
+  return { ...state, sub_domain: subDomain, keywords, scope_baseline: baseline }
+}
+
+function sameKeywords(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((item, index) => item === right[index])
+}
+
+/**
+ * 换课题时记下的**存量快照**（方案 C 的口径基线）。
+ *
+ * 知识阶段的判据据此改判"相对基线的新增"，而不是绝对总量：
+ * `papers - baseline.papers >= min_papers`。
+ * 没有基线（新项目）时退回绝对口径，行为与加基线之前一致。
+ */
+export interface ScopeBaselineCounts {
+  readonly papers: number
+  readonly parsed: number
+  readonly extractions: number
+  readonly entries: Readonly<Record<string, number>>
+}
+
+export interface ScopeBaseline extends ScopeBaselineCounts {
+  readonly recorded_at: string
+  /** 记录基线时的范围，便于人工核对"这条基线是哪次课题的"。 */
+  readonly sub_domain: string | null
+  readonly keywords: readonly string[]
 }
 
 /**
@@ -330,7 +387,10 @@ export const DEFAULT_CRITERIA: CriteriaThresholds = {
  * 设计要点：
  * - 缺什么就明确说缺什么（含"当前/要求"两个数字），因为这份清单会直接回传给 Agent 与用户；
  * - 判据是可量化的真实事实，**不接受模型自报**（见 `StageFacts`）；
- * - `sub_domain` 未确定时，知识阶段即便数字达标也不放行——检索范围没定就谈"知识建成"没有意义。
+ * - `sub_domain` 未确定时，知识阶段即便数字达标也不放行——检索范围没定就谈"知识建成"没有意义；
+ * - **有口径基线时（方案 C），知识阶段的数字一律按"相对基线的新增"算**：语料跨课题沿用，
+ *   若仍读绝对总量，上一个课题的存量会把门控直接顶过。清单里同时给出存量与基线，便于核对
+ *   （"新增 12/100 篇（存量 390，基线 378）"——一眼能看出门控在量什么）。
  */
 export function evaluateCriteria(
   state: ProjectState,
@@ -338,19 +398,56 @@ export function evaluateCriteria(
   thresholds: CriteriaThresholds = DEFAULT_CRITERIA,
 ): readonly string[] {
   const missing: string[] = []
+  const baseline = state.scope_baseline ?? null
+
+  /**
+   * 一个计数的"本课题口径"描述：无基线时是绝对值；有基线时是增量，
+   * 并附带存量与基线以便核对。
+   *
+   * @param current - 当前绝对计数。
+   * @param base - 基线计数（无基线传 0）。
+   * @returns 当前口径下的分子，以及用于展示的后缀。
+   */
+  const gauge = (current: number, base: number): { value: number; suffix: string } => {
+    if (baseline === null) return { value: current, suffix: '' }
+    return { value: current - base, suffix: `（存量 ${current}，基线 ${base}）` }
+  }
+
   const entryCount = (store: string): number => facts.entries[store] ?? 0
+  const entryBase = (store: string): number => baseline?.entries[store] ?? 0
+
+  /** 无基线时用绝对口径的原措辞；有基线时在名称后加"新增"，避免出现两个空格。 */
+  const name = (label: string): string => (baseline === null ? label : `${label}新增`)
 
   switch (state.current_stage) {
     case 'knowledge_building': {
       const limits = thresholds.knowledge_building
       if (state.sub_domain === null) missing.push('研究范围未确定（sub_domain 为空）：先用 cvagent_scope_set 落盘细分领域与关键词')
-      if (facts.papers < limits.min_papers) missing.push(`论文库 ${facts.papers}/${limits.min_papers} 篇`)
-      if (facts.parsed < limits.min_parsed) missing.push(`已解析全文 ${facts.parsed}/${limits.min_parsed} 篇`)
-      if (facts.extractions < limits.min_extractions) missing.push(`结构化提取（抽检口径）${facts.extractions}/${limits.min_extractions} 篇`)
-      if (entryCount('problems') < limits.min_problems) missing.push(`问题卡 ${entryCount('problems')}/${limits.min_problems} 条`)
-      if (entryCount('methods') < limits.min_methods) missing.push(`方法卡 ${entryCount('methods')}/${limits.min_methods} 条`)
-      if (entryCount('innovations') < limits.min_innovations) missing.push(`创新卡 ${entryCount('innovations')}/${limits.min_innovations} 条`)
-      if (entryCount('failures') < limits.min_failures) missing.push(`失败方法库 ${entryCount('failures')}/${limits.min_failures} 条`)
+      const papers = gauge(facts.papers, baseline?.papers ?? 0)
+      if (papers.value < limits.min_papers) {
+        missing.push(`${name('论文库')} ${papers.value}/${limits.min_papers} 篇${papers.suffix}`)
+      }
+      const parsed = gauge(facts.parsed, baseline?.parsed ?? 0)
+      if (parsed.value < limits.min_parsed) {
+        missing.push(`${name('已解析全文')} ${parsed.value}/${limits.min_parsed} 篇${parsed.suffix}`)
+      }
+      const extractions = gauge(facts.extractions, baseline?.extractions ?? 0)
+      if (extractions.value < limits.min_extractions) {
+        missing.push(`${name('结构化提取（抽检口径）')} ${extractions.value}/${limits.min_extractions} 篇${extractions.suffix}`)
+      }
+
+      const entryChecks: ReadonlyArray<readonly [string, string, number]> = [
+        ['problems', '问题卡', limits.min_problems],
+        ['methods', '方法卡', limits.min_methods],
+        ['innovations', '创新卡', limits.min_innovations],
+        ['failures', '失败方法库', limits.min_failures],
+      ]
+      for (const [store, label, limit] of entryChecks) {
+        const count = gauge(entryCount(store), entryBase(store))
+        if (count.value < limit) {
+          missing.push(`${name(label)} ${count.value}/${limit} 条${count.suffix}`)
+        }
+      }
       break
     }
     case 'idea_generation': {

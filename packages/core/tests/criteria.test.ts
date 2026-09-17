@@ -75,7 +75,7 @@ describe('knowledge_building 判据（真实数字 → 缺失清单）', () => {
     expect(missing).toEqual([
       '论文库 12/100 篇',
       '已解析全文 3/50 篇',
-      '结构化提取（抽检口径）1/20 篇',
+      '结构化提取（抽检口径） 1/20 篇',
       '问题卡 1/5 条',
       '方法卡 0/5 条',
       '创新卡 2/10 条',
@@ -90,6 +90,89 @@ describe('knowledge_building 判据（真实数字 → 缺失清单）', () => {
       knowledge_building: { min_papers: 1, min_parsed: 1, min_extractions: 1, min_problems: 0, min_methods: 0, min_innovations: 0, min_failures: 0 },
     }
     expect(evaluateCriteria(state, { papers: 1, parsed: 1, extractions: 1, entries: {} }, relaxed)).toEqual([])
+  })
+})
+
+/**
+ * 口径基线（方案 C，用户 2026-09-17 裁定）。
+ *
+ * 场景就是真实的：库里已有 390 篇 / 171 条（上一个课题的存量），新课题要在这份语料上继续。
+ * 若判据读绝对总量，"知识建成"当场达标——门控形同虚设。基线把判据改成"本课题新增"。
+ */
+describe('口径基线（换课题后只认新增）', () => {
+  const EXISTING = { papers: 390, parsed: 154, extractions: 21, entries: { problems: 14, methods: 21, innovations: 69, failures: 67 } }
+
+  it('范围变化时记录基线；重复落盘同一范围不动它', () => {
+    const base = createProjectState('p1', 'confirm')
+    const first = setResearchScope(base, { sub_domain: '跨生成器泛化', keywords: ['cross-generator'] }, '2026-09-17T10:00:00Z', () => EXISTING)
+    expect(first.scope_baseline).toMatchObject({ recorded_at: '2026-09-17T10:00:00Z', papers: 390, sub_domain: '跨生成器泛化' })
+
+    // 同一范围再落盘一次：基线必须原样保留（否则每次 scope_set 都把进度清零）
+    let snapshotCalls = 0
+    const again = setResearchScope(first, { sub_domain: '跨生成器泛化', keywords: ['cross-generator'] }, '2026-09-17T11:00:00Z', () => {
+      snapshotCalls += 1
+      return { papers: 999, parsed: 999, extractions: 999, entries: {} }
+    })
+    expect(again.scope_baseline).toEqual(first.scope_baseline)
+    expect(snapshotCalls, '范围没变就不该去查库').toBe(0)
+  })
+
+  it('存量顶满也不再放行：判据看的是新增', () => {
+    const state = setResearchScope(
+      { ...createProjectState('p1', 'confirm'), current_stage: 'knowledge_building' },
+      { sub_domain: '跨生成器泛化' },
+      '2026-09-17T10:00:00Z',
+      () => EXISTING,
+    )
+    // 当前事实 == 基线（一篇没新增）→ 全部不达标，且消息里带存量与基线
+    const missing = evaluateCriteria(state, { ...EXISTING, entries: { ...EXISTING.entries } })
+    expect(missing).toHaveLength(7)
+    expect(missing[0]).toBe('论文库新增 0/100 篇（存量 390，基线 390）')
+
+    // 存量顶满、新增为零 → 七项全部不达标（这正是方案 C 要拦的：绝对口径下这里会直接放行）
+    expect(missing).toEqual([
+      '论文库新增 0/100 篇（存量 390，基线 390）',
+      '已解析全文新增 0/50 篇（存量 154，基线 154）',
+      '结构化提取（抽检口径）新增 0/20 篇（存量 21，基线 21）',
+      '问题卡新增 0/5 条（存量 14，基线 14）',
+      '方法卡新增 0/5 条（存量 21，基线 21）',
+      '创新卡新增 0/10 条（存量 69，基线 69）',
+      '失败方法库新增 0/5 条（存量 67，基线 67）',
+    ])
+
+    // 新增达标（只靠新增，不靠存量）
+    const grown: StageFacts = {
+      papers: 390 + 100,
+      parsed: 154 + 50,
+      extractions: 21 + 20,
+      entries: { problems: 14 + 5, methods: 21 + 5, innovations: 69 + 10, failures: 67 + 5 },
+    }
+    expect(evaluateCriteria(state, grown)).toEqual([])
+
+    // 只新增一点点：报"新增 5/100"，不被 395 的存量掩盖；其余六项仍点名
+    const barely = evaluateCriteria(state, { ...EXISTING, papers: 395, entries: { ...EXISTING.entries } })
+    expect(barely[0]).toBe('论文库新增 5/100 篇（存量 395，基线 390）')
+    expect(barely).toHaveLength(7)
+    expect(barely).toContain('已解析全文新增 0/50 篇（存量 154，基线 154）')
+  })
+
+  it('没有基线时退回绝对口径（新项目行为不变）', () => {
+    const state = withStage('knowledge_building', { sub_domain: '音频深伪检测' })
+    expect(state.scope_baseline ?? null).toBeNull()
+    expect(evaluateCriteria(state, RICH_FACTS)).toEqual([])
+  })
+
+  it('换课题会重新记基线（旧基线不跨课题生效）', () => {
+    const first = setResearchScope(
+      { ...createProjectState('p1', 'confirm'), current_stage: 'knowledge_building' },
+      { sub_domain: '课题一' },
+      '2026-09-17T10:00:00Z',
+      () => EXISTING,
+    )
+    const second = setResearchScope(first, { sub_domain: '课题二' }, '2026-09-18T10:00:00Z', () => ({ ...EXISTING, papers: 500 }))
+    expect(second.scope_baseline).toMatchObject({ sub_domain: '课题二', papers: 500, recorded_at: '2026-09-18T10:00:00Z' })
+    expect(evaluateCriteria(second, { ...EXISTING, papers: 500, entries: { ...EXISTING.entries } })[0])
+      .toBe('论文库新增 0/100 篇（存量 500，基线 500）')
   })
 })
 

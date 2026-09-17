@@ -39,6 +39,7 @@ import {
   type Mode,
   type ProjectState,
   type ResolvedGate,
+  type ScopeBaselineCounts,
   type Stage,
   type StageFacts,
 } from '@cv-research/core'
@@ -192,12 +193,40 @@ export class ProjectStateService extends Service {
    *
    * 语义：只覆盖传入的字段（不传 = 保持原值）。空串/空白视为"清空为 null"，
    * 与 core 的 `setResearchScope` 同一套归一化。
+   *
+   * **口径基线（方案 C，用户 2026-09-17 裁定）**：范围**真的变了**时，顺手记下此刻的
+   * 存量快照，此后知识阶段的判据只认本课题新增——语料沿用，但门控不被历史存量顶过。
+   * 快照是惰性求值的：范围没变就不查库。
    */
   async setScope(scope: { sub_domain?: string | null; keywords?: readonly string[] }): Promise<ProjectState> {
     const state = await this.getOrCreateState()
-    const next = setResearchScope(state, scope)
+    const next = setResearchScope(
+      state,
+      scope,
+      new Date().toISOString(),
+      () => this.snapshotCounts(),
+    )
     await this.save(next)
     return next
+  }
+
+  /** 存量快照（同步口径，与 `collectFacts` 读同一批数字）。 */
+  private snapshotCounts(): ScopeBaselineCounts {
+    const kb = this.ctx.get('kb') as
+      | {
+        count(): number
+        parsedCount?(): number
+        extractionCount(): number
+        entrySummary(): { counts: Record<string, number> }
+      }
+      | undefined
+    if (kb === undefined) return { papers: 0, parsed: 0, extractions: 0, entries: {} }
+    return {
+      papers: kb.count(),
+      parsed: typeof kb.parsedCount === 'function' ? kb.parsedCount() : 0,
+      extractions: kb.extractionCount(),
+      entries: kb.entrySummary().counts,
+    }
   }
 
   /**

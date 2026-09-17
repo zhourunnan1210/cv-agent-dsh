@@ -84,27 +84,34 @@ async function makeEnv(projectDir) {
   return { execute, service, kb, section, projectDir }
 }
 
-/** 把知识库喂到满足 `knowledge_building` 判据（真实写入，不是打桩数字）。 */
-function seedSatisfiedKnowledge(kb) {
+/**
+ * 把知识库喂到满足 `knowledge_building` 判据（真实写入，不是打桩数字）。
+ *
+ * @param kb - 目标知识库。
+ * @param round - 第几批（用于方案 C 的"新增"场景）：不同批次用不同 id，
+ *   否则重复调用只会合并到同一批条目上，制造不出"新增"。
+ */
+function seedSatisfiedKnowledge(kb, round = 1) {
   const now = new Date().toISOString()
+  const tag = round === 1 ? '' : `r${round}-`
   for (let i = 0; i < 100; i += 1) {
     const parsed = i < 50
     kb.upsertPaper({
-      paper_id: `10.1000/p${i}`,
-      title: `Paper ${i}`,
+      paper_id: `10.1000/${tag}p${i}`,
+      title: `Paper ${tag}${i}`,
       authors: [],
       source_channel: 'asta',
       pdf_status: parsed ? 'downloaded' : 'pending',
-      ...(parsed ? { md_path: `markdown/10.1000/p${i}/full.md`, parse_channel: 'mineru' } : {}),
+      ...(parsed ? { md_path: `markdown/10.1000/${tag}p${i}/full.md`, parse_channel: 'mineru' } : {}),
       created_at: now,
       updated_at: now,
     })
   }
   for (let i = 0; i < 20; i += 1) {
     kb.saveExtraction({
-      paper_id: `10.1000/p${i}`,
-      problem_statement: `问题 ${i}`,
-      method_summary: `方法 ${i}`,
+      paper_id: `10.1000/${tag}p${i}`,
+      problem_statement: `问题 ${tag}${i}`,
+      method_summary: `方法 ${tag}${i}`,
       innovations: [],
       future_work: [],
       limitations: [],
@@ -116,7 +123,7 @@ function seedSatisfiedKnowledge(kb) {
     })
   }
   const fill = (store, count, prefix) => {
-    for (let i = 0; i < count; i += 1) kb.upsertEntry(store, `${prefix} 条目 ${i}`, [`10.1000/p${i}`], {})
+    for (let i = 0; i < count; i += 1) kb.upsertEntry(store, `${prefix} 条目 ${tag}${i}`, [`10.1000/${tag}p${i}`], {})
   }
   fill('problems', 5, '问题卡')
   fill('methods', 5, '方法卡')
@@ -198,7 +205,7 @@ describe('cvagent 状态族工具（真实实现 + 真实管线）', () => {
       expect.stringMatching(/研究范围未确定/),
       expect.stringMatching(/论文库 0\/100/),
       expect.stringMatching(/已解析全文 0\/50/),
-      expect.stringMatching(/结构化提取（抽检口径）0\/20/),
+      expect.stringMatching(/结构化提取（抽检口径） 0\/20/),
       expect.stringMatching(/问题卡 0\/5/),
       expect.stringMatching(/方法卡 0\/5/),
       expect.stringMatching(/创新卡 0\/10/),
@@ -226,9 +233,39 @@ describe('cvagent 状态族工具（真实实现 + 真实管线）', () => {
     expect(cleared.value.scope_ready).toBe(false)
   })
 
-  it('喂饱知识库并落盘范围 → 知识阶段放行；缺失项随之清空', async () => {
+  /**
+   * 口径基线（方案 C，用户 2026-09-17 裁定）的**集成级**回归。
+   *
+   * 真实场景：库里已有上一个课题的 390 篇，新课题落盘范围后，门控**不能**因为存量而达标。
+   * 这曾经是个真问题——判据读绝对总量，新课题一落盘就"知识建成"。
+   */
+  it('存量先于范围存在 → 门控仍不放行（基线把存量挡在门外）', async () => {
+    seedSatisfiedKnowledge(env.kb) // 上一个课题的存量：已满足绝对口径
+    const set = await env.execute('cvagent_scope_set', { sub_domain: '跨生成器泛化', keywords: ['cross-generator'] })
+    expect(set.value.scope_ready).toBe(true)
+
+    const result = await env.execute('cvagent_state_advance', { summary: '复用旧语料，直接过知识阶段' })
+    expect(result.value.satisfied).toBe(false)
+    expect(result.value.gate_requested).toBe(false)
+    // 点名"新增"，并把存量与基线一并给出——模型与用户都能看出门控在量什么
+    expect(result.value.missing).toEqual(expect.arrayContaining([
+      expect.stringMatching(/论文库新增 0\/100 篇（存量 100，基线 100）/),
+      expect.stringMatching(/问题卡新增 0\/5 条（存量 5，基线 5）/),
+    ]))
+  })
+
+  it('新课题新增达标 → 放行（基线只挡存量，不挡增量）', async () => {
     seedSatisfiedKnowledge(env.kb)
+    await env.execute('cvagent_scope_set', { sub_domain: '跨生成器泛化' })
+    seedSatisfiedKnowledge(env.kb, 2) // 再来一轮等量新增
+
+    const result = await env.execute('cvagent_state_advance', { summary: '本课题新增达标' })
+    expect(result.value.satisfied).toBe(true)
+  })
+
+  it('喂饱知识库并落盘范围 → 知识阶段放行；缺失项随之清空', async () => {
     await env.execute('cvagent_scope_set', { sub_domain: '音频深伪检测', keywords: ['audio deepfake'] })
+    seedSatisfiedKnowledge(env.kb)
 
     const stillMissing = await env.execute('cvagent_state_advance', { summary: '复核' })
     // 还差"已收敛实验"以外的项都应满足（experiment 判据属于后面的阶段）
@@ -241,8 +278,8 @@ describe('cvagent 状态族工具（真实实现 + 真实管线）', () => {
   })
 
   it('advance 达标 → 写入待决门控；动态章节反映待决状态（A 模式要求先问用户）', async () => {
-    seedSatisfiedKnowledge(env.kb)
     await env.execute('cvagent_scope_set', { sub_domain: '音频深伪检测' })
+    seedSatisfiedKnowledge(env.kb)
     await env.execute('cvagent_mode_set', { mode: 'confirm' })
 
     const result = await env.execute('cvagent_state_advance', { summary: '知识构建完成：papers=100（真实）' })
@@ -266,8 +303,8 @@ describe('cvagent 状态族工具（真实实现 + 真实管线）', () => {
   })
 
   it('完整往返：advance → resolve(advance) → 快照 → 回滚', async () => {
-    seedSatisfiedKnowledge(env.kb)
     await env.execute('cvagent_scope_set', { sub_domain: '音频深伪检测' })
+    seedSatisfiedKnowledge(env.kb)
     await env.execute('cvagent_mode_set', { mode: 'supervised' })
     await walkStage(env.execute, '知识构建完成')
 
@@ -288,8 +325,8 @@ describe('cvagent 状态族工具（真实实现 + 真实管线）', () => {
   })
 
   it('动态 prompt 章节随阶段推进变化', async () => {
-    seedSatisfiedKnowledge(env.kb)
     await env.execute('cvagent_scope_set', { sub_domain: '音频深伪检测' })
+    seedSatisfiedKnowledge(env.kb)
     await env.execute('cvagent_mode_set', { mode: 'supervised' })
     expect(await env.section('cvagent:state')).toContain('knowledge_building')
     await walkStage(env.execute, '知识构建完成')
@@ -301,8 +338,8 @@ describe('cvagent 状态族工具（真实实现 + 真实管线）', () => {
   })
 
   it('idea 阶段判据看生成/打分的真实计数（noteIdeaActivity）', async () => {
-    seedSatisfiedKnowledge(env.kb)
     await env.execute('cvagent_scope_set', { sub_domain: '音频深伪检测' })
+    seedSatisfiedKnowledge(env.kb)
     await env.execute('cvagent_mode_set', { mode: 'supervised' })
     await walkStage(env.execute, '知识构建完成')
 
@@ -324,8 +361,8 @@ describe('cvagent 状态族工具（真实实现 + 真实管线）', () => {
   })
 
   it('experiment 阶段判据数 experiments/ 下有 RESULTS.md 的实验', async () => {
-    seedSatisfiedKnowledge(env.kb)
     await env.execute('cvagent_scope_set', { sub_domain: '音频深伪检测' })
+    seedSatisfiedKnowledge(env.kb)
     await env.execute('cvagent_mode_set', { mode: 'supervised' })
     await walkStage(env.execute, '知识构建完成')
     await env.service.noteIdeaActivity('generated', 3)
@@ -347,9 +384,11 @@ describe('cvagent 状态族工具（真实实现 + 真实管线）', () => {
   describe('达标流水线：三模式五阶段走通并可回滚', () => {
     for (const mode of ['confirm', 'supervised', 'full_auto'] as const) {
       it(`模式 ${mode}：推进到 writing，可回滚`, async () => {
+        // 顺序有意为之（方案 C）：先落盘范围（记下口径基线），再造语料。
+        // 反过来的话基线会等于语料本身，门控要求"新增"——那是刻意的语义，见文件末尾的专项用例。
+        await env.execute('cvagent_scope_set', { sub_domain: '音频深伪检测' })
         seedSatisfiedKnowledge(env.kb)
         await writeConvergedExperiment(dir)
-        await env.execute('cvagent_scope_set', { sub_domain: '音频深伪检测' })
         await env.execute('cvagent_mode_set', { mode })
         await env.service.noteIdeaActivity('generated', 3)
         await env.service.noteIdeaActivity('scored', 1)
