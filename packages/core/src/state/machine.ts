@@ -277,7 +277,21 @@ export function setResearchScope(
     : [...new Set(scope.keywords.map((item) => item.trim()).filter((item) => item !== ''))]
 
   const changed = subDomain !== state.sub_domain || !sameKeywords(keywords, state.keywords)
-  if (!changed) return { ...state, sub_domain: subDomain, keywords }
+  /**
+   * 基线字段**缺失**（`undefined`）= 这条状态由升级前的代码写入。
+   *
+   * 此时即便范围没变也要补记一次基线：否则老状态会永远停在"绝对口径"，
+   * 而它恰恰是最需要基线的那些状态（范围早已落盘、存量早已存在）。
+   * 注意与 `null` 的区别：`null` 是"明确没有基线"，不再重复补记。
+   */
+  const missingBaseline = state.scope_baseline === undefined
+
+  if (!changed && !missingBaseline) return { ...state, sub_domain: subDomain, keywords }
+
+  // 范围被清空：没有基线可言（下次落范围时会重新记）。
+  if (subDomain === null && keywords.length === 0) {
+    return { ...state, sub_domain: subDomain, keywords, scope_baseline: null }
+  }
 
   const baseline: ScopeBaseline | null = snapshot === undefined
     ? null
@@ -423,6 +437,11 @@ export function evaluateCriteria(
     case 'knowledge_building': {
       const limits = thresholds.knowledge_building
       if (state.sub_domain === null) missing.push('研究范围未确定（sub_domain 为空）：先用 cvagent_scope_set 落盘细分领域与关键词')
+      // 升级前的状态没有基线字段。此时绝对口径会把存量当成本课题成果——
+      // **宁可卡住也不误放**：让人再落一次范围，在存量上划出本课题的起点。
+      if (state.sub_domain !== null && state.scope_baseline === undefined) {
+        missing.push('口径基线未记录（本状态由升级前写入）：再调一次 cvagent_scope_set（含本课题范围）以在现有存量上划出起点')
+      }
       const papers = gauge(facts.papers, baseline?.papers ?? 0)
       if (papers.value < limits.min_papers) {
         missing.push(`${name('论文库')} ${papers.value}/${limits.min_papers} 篇${papers.suffix}`)

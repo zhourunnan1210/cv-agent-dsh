@@ -174,6 +174,30 @@ describe('口径基线（换课题后只认新增）', () => {
     expect(evaluateCriteria(second, { ...EXISTING, papers: 500, entries: { ...EXISTING.entries } })[0])
       .toBe('论文库新增 0/100 篇（存量 500，基线 500）')
   })
+
+  /**
+   * 升级路径：老状态（范围早已落盘、没有基线字段）必须**补记基线**而不是继续用绝对口径。
+   * 这正是用户当前那条状态的真实形态。
+   */
+  it('老状态（无基线字段）：再落一次同一范围也会补记基线', () => {
+    // 模拟升级前的状态：sub_domain 已落盘，但完全没有 scope_baseline 字段
+    const legacy: ProjectState = { ...createProjectState('p1', 'confirm'), current_stage: 'knowledge_building', sub_domain: '跨生成器泛化', keywords: ['cross-generator'] }
+    expect(legacy.scope_baseline).toBeUndefined()
+    // 升级后第一次 advance：明确卡住，要求补记（不误放）
+    expect(evaluateCriteria(legacy, { ...EXISTING, entries: { ...EXISTING.entries } }))
+      .toContain('口径基线未记录（本状态由升级前写入）：再调一次 cvagent_scope_set（含本课题范围）以在现有存量上划出起点')
+
+    // 再落一次**同一范围** → 补记基线（changed=false，但缺字段）
+    const migrated = setResearchScope(legacy, { sub_domain: '跨生成器泛化', keywords: ['cross-generator'] }, '2026-09-17T12:00:00Z', () => EXISTING)
+    expect(migrated.scope_baseline).toMatchObject({ papers: 390, recorded_at: '2026-09-17T12:00:00Z' })
+    const after = evaluateCriteria(migrated, { ...EXISTING, entries: { ...EXISTING.entries } })
+    expect(after).not.toContain('口径基线未记录（本状态由升级前写入）：再调一次 cvagent_scope_set（含本课题范围）以在现有存量上划出起点')
+    expect(after[0]).toBe('论文库新增 0/100 篇（存量 390，基线 390）')
+
+    // 再落第三次：基线已存在 → 不再补记（进度不会被清零）
+    const third = setResearchScope(migrated, { sub_domain: '跨生成器泛化', keywords: ['cross-generator'] }, '2026-09-17T13:00:00Z', () => ({ ...EXISTING, papers: 999 }))
+    expect(third.scope_baseline).toEqual(migrated.scope_baseline)
+  })
 })
 
 describe('后续阶段判据', () => {
