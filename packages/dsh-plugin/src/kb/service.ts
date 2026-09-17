@@ -68,6 +68,44 @@ declare module '@deepseek-ai/cordis' {
 /** Cordis 插件名。 */
 export const name = 'cvagent-kb'
 
+/**
+ * 论文画像里的一条 L3 条目引用（含"是否共享"的判据）。
+ *
+ * `shared_with` 是**判断这条目能否代表这篇论文**的关键：P002 的 shared_with = 17，
+ * 说明它是 18 篇共享的簇级问题；而 M001 的 shared_with = 0，说明它是这篇独有的做法。
+ */
+export interface ProfileEntryRef {
+  readonly entry_id: string
+  readonly statement: string
+  readonly ext: Record<string, unknown>
+  /** 除本论文外，还有几篇论文共享这条目（0 = 本篇独有）。 */
+  readonly shared_with: number
+}
+
+/**
+ * 论文画像：**论文中心视图**（整合设计 v1.0 §3.4）。
+ *
+ * 撞车链路的证据卡就是它——每篇候选论文一张，含 L2 全文（不截断）与 L3 全部条目。
+ * 之前要拿到这些必须扫四张表反查；现在是一次组装。
+ */
+export interface PaperProfile {
+  readonly paper_id: string
+  readonly meta: {
+    readonly title: string
+    readonly year?: number
+    readonly venue?: string
+    readonly citation_count?: number
+    readonly pdf_status: string
+    readonly md_path?: string
+  }
+  /** L2 提取；尚未提取的论文没有这一项（不等于空——要能与"提取了但字段空"区分）。 */
+  readonly extraction?: PaperExtraction
+  /** L3 条目，按库分组。 */
+  readonly entries: Readonly<Record<StoreName, readonly ProfileEntryRef[]>>
+  /** 四个库合计关联条目数（实测 6–16）。 */
+  readonly entry_total: number
+}
+
 /** kb 服务的对外接口（工具行与本层测试都只看这一面）。 */
 export interface KbApi {
   upsertPaper(record: PaperRecord): UpsertPaperOutcome
@@ -87,6 +125,14 @@ export interface KbApi {
   searchEntries(options?: EntrySearchOptions): KbEntry[]
   getEntry(store: StoreName, entryId: string): KbEntry | undefined
   entrySummary(): EntrySummary
+  /** 论文画像（论文中心视图：L1 + L2 + L3）。 */
+  getPaperProfile(paperId: string): PaperProfile | undefined
+  /** 反向索引：某篇论文在某库（或缺省四个库）有哪些条目。 */
+  entriesOfPaper(paperId: string, store?: StoreName): KbEntry[]
+  /** 与某条问题条目共享该问题的全部论文（撞车"问题轴"原语）。 */
+  papersSharingProblem(problemEntryId: string): string[]
+  /** 某条目的全部来源论文。 */
+  papersOfEntry(store: StoreName, entryId: string): string[]
 }
 
 export class KbService extends Service implements KbApi {
@@ -175,6 +221,78 @@ export class KbService extends Service implements KbApi {
 
   entrySummary(): EntrySummary {
     return this.entries.summary()
+  }
+
+  // ── 论文画像（整合设计 v1.0 §3.4）：论文中心视图 ──────────────────────────
+  //
+  // 在此之前，"取一篇论文在库里的完整信息"要扫四张表、解析每条 source_papers。
+  // 撞车链路的证据卡需要**每篇候选论文一张**，而候选是每次查询动态产生的——
+  // 没有反向索引，每次撞车都要付全表扫描的代价。
+  //
+  // 选择**实时组装**而不是物化：424 篇规模下开销可忽略，且永远不会过期
+  // （物化表要在每次提取/条目写入时失效重建，那是又一份需要维护的一致性）。
+
+  /**
+   * 组装一篇论文的完整画像：L1 元数据 + L2 提取 + L3 全部条目。
+   *
+   * @param paperId - 论文 ID。
+   * @returns 画像；论文不存在时返回 `undefined`。
+   */
+  getPaperProfile(paperId: string): PaperProfile | undefined {
+    const paper = this.library.get(paperId)
+    if (paper === undefined) return undefined
+    const extraction = this.library.getExtraction(paperId)
+
+    // 组装期用可变数组，返回时收成只读（画像对外是不可变视图）。
+    const mutable: Record<StoreName, ProfileEntryRef[]> = { problems: [], methods: [], innovations: [], failures: [] }
+    for (const store of STORE_NAMES) {
+      for (const entry of this.entries.entriesOfPaper(paperId, store)) {
+        mutable[store].push({
+          entry_id: entry.entry_id,
+          statement: entry.statement,
+          ext: entry.ext as Record<string, unknown>,
+          // 这条目是"这篇独有"还是"十几篇共享"——一眼能看出来，
+          // 是判断"该条目能否代表这篇论文"的关键（P002 的 shared_with = 17）。
+          shared_with: Math.max(0, this.entries.papersOfEntry(store, entry.entry_id).length - 1),
+        })
+      }
+    }
+    const entries = mutable as Readonly<Record<StoreName, readonly ProfileEntryRef[]>>
+
+    return {
+      paper_id: paper.paper_id,
+      meta: {
+        title: paper.title,
+        ...(paper.year === undefined ? {} : { year: paper.year }),
+        ...(paper.venue === undefined ? {} : { venue: paper.venue }),
+        ...(paper.citation_count === undefined ? {} : { citation_count: paper.citation_count }),
+        pdf_status: paper.pdf_status,
+        ...(paper.md_path === undefined ? {} : { md_path: paper.md_path }),
+      },
+      ...(extraction === undefined ? {} : { extraction }),
+      entries,
+      entry_total: STORE_NAMES.reduce((sum, store) => sum + entries[store].length, 0),
+    }
+  }
+
+  /** 反向索引：某篇论文在某个库里有哪些条目（撞车链路的原语）。 */
+  entriesOfPaper(paperId: string, store?: StoreName): KbEntry[] {
+    return this.entries.entriesOfPaper(paperId, store)
+  }
+
+  /**
+   * 与某条问题条目**共享该问题**的全部论文（撞车"问题轴"的原语）。
+   *
+   * 问题库天然成簇（P002 有 18 篇来源），所以这一条查询就能拿到
+   * "在解决同类问题"的论文集合——原是撞车链路里最有效的一步。
+   */
+  papersSharingProblem(problemEntryId: string): string[] {
+    return this.entries.papersOfEntry('problems', problemEntryId)
+  }
+
+  /** 某条目的全部来源论文（通用版，四个库都可用）。 */
+  papersOfEntry(store: StoreName, entryId: string): string[] {
+    return this.entries.papersOfEntry(store, entryId)
   }
 
   // ── Domain Pack 派生所需的原始视图（P3-5）─────────────────────────────────

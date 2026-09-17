@@ -42,10 +42,17 @@ describe('PaperDatabase 迁移框架', () => {
 
   it('首次打开应用全部迁移并记录版本', () => {
     const db = new PaperDatabase(join(dir, 'metadata.db'))
-    // 断言与冻结清单**同源**（而不是硬编码 [1,2,3]）：迁移纪律是「只追加新版本」，
-    // 追加 v4/v5… 时这条测试应当自动跟随，而不是变成需要手改的绊脚石
+    // 断言与冻结清单**同源**（而不是硬编码版本号）：迁移纪律是「只追加新版本」，
+    // 追加 v6、v7… 时这条测试应当自动跟随，而不是变成需要手改的绊脚石。
+    //
+    // ⚠️ 这里原本还有一行 `toEqual([1, 2, 3, 4, 5])` —— 它和上面那句注释**直接矛盾**，
+    // 而且正是本项目反复踩的那类坑：**把实现取值写死成期望值**（E33 的 `toBe(0)` 同源）。
+    // 加 v6 时它立刻红了，而红的原因不是产品有问题，是测试自己不会跟随。
+    // 现在改成断言**真正的不变式**：版本号从 1 起连续、无空洞、无重复。
     expect(db.appliedMigrations()).toEqual(MIGRATIONS.map((migration) => migration.version))
-    expect(db.appliedMigrations()).toEqual([1, 2, 3, 4, 5])
+    const versions = db.appliedMigrations()
+    expect(versions).toEqual(Array.from({ length: versions.length }, (_, index) => index + 1))
+    expect(new Set(versions).size, '版本号不得重复').toBe(versions.length)
     db.close()
   })
 

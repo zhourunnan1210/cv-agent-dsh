@@ -222,6 +222,63 @@ export const MIGRATIONS: readonly Migration[] = [
       END;
     `,
   },
+  {
+    /**
+     * **反向索引：论文 → 条目**（整合设计 v1.0 §3.4）。
+     *
+     * ## 为什么必须加
+     *
+     * 在此之前，`source_papers` 是**单向**指针：条目知道自己的来源论文，而论文
+     * 不知道自己有哪些条目。于是"取一篇论文在库里的完整信息"只能**扫四张表、
+     * 解析 171 条 JSON**——这就是整合设计里说的「库是概念中心的，而撞车需要论文中心的视图」。
+     *
+     * 撞车链路的证据卡要求"每篇候选论文一张卡 = L1 + L2 + 该论文的全部 L3 条目"，
+     * 而候选论文是**每次查询动态产生**的；没有反向索引，每次都要全表扫。
+     * 171 条时无所谓，几百上千条时这就是每次撞车的固定开销。
+     *
+     * ## 为什么用关联表而不是给四库加列
+     *
+     * 一条条目可以有 N 篇来源论文（P002 有 18 篇），论文也可以有 N 条条目
+     * （实测 6–16 条）——这是**多对多**。JSON 数组列无法建索引做反向连接。
+     *
+     * ## 回填
+     *
+     * 从四库现有的 `source_papers` JSON 全量展开。`json_each` 是 SQLite 内置表值函数，
+     * 所以回填**不需要**开扩展。
+     *
+     * ## 维护
+     *
+     * 由 `TriLibrary.upsert` 在**同一事务**里同步（见 trilibrary.ts）；不在 SQL 层用触发器，
+     * 因为 `source_papers` 是 JSON，触发器里解析会把"合并语义"从 TS 复制到 SQL——
+     * 两份实现迟早分叉（本项目已有教训）。
+     *
+     * ## 为什么这条迁移用 `IF NOT EXISTS`（与 v1–v5 不同）
+     *
+     * 前五条迁移只建结构，跑完就完了。这条**还带全量回填**——它是唯一一条
+     * "执行到一半代价很大"的迁移。写成幂等的，意味着中断后重跑无害，
+     * `INSERT OR IGNORE` + 主键也保证重复回填不会产生重复关联。
+     * 测试正是靠这一点验证"回填无损且可重复执行"。
+     */
+    version: 6,
+    up: `
+      CREATE TABLE IF NOT EXISTS entry_sources (
+        paper_id TEXT NOT NULL,
+        store    TEXT NOT NULL,
+        entry_id TEXT NOT NULL,
+        PRIMARY KEY (paper_id, store, entry_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_entry_sources_entry ON entry_sources(store, entry_id);
+
+      INSERT OR IGNORE INTO entry_sources (paper_id, store, entry_id)
+        SELECT j.value, 'problems', p.entry_id FROM problems p, json_each(p.source_papers) j;
+      INSERT OR IGNORE INTO entry_sources (paper_id, store, entry_id)
+        SELECT j.value, 'methods', m.entry_id FROM methods m, json_each(m.source_papers) j;
+      INSERT OR IGNORE INTO entry_sources (paper_id, store, entry_id)
+        SELECT j.value, 'innovations', i.entry_id FROM innovations i, json_each(i.source_papers) j;
+      INSERT OR IGNORE INTO entry_sources (paper_id, store, entry_id)
+        SELECT j.value, 'failures', f.entry_id FROM failures f, json_each(f.source_papers) j;
+    `,
+  },
 ]
 
 /** papers 表与三库+失败库的 SQLite 行形态。 */

@@ -133,6 +133,8 @@ export class TriLibrary {
         this.db.raw
           .prepare(`UPDATE ${store} SET statement = ?, ext = ?, source_papers = ?, updated_at = ? WHERE entry_id = ?`)
           .run(mergedStatement, JSON.stringify(mergedExt), JSON.stringify(sources), now, row.entry_id)
+        // 反向索引同步（迁移 v6）：合并会带来**新的来源论文**，必须补进去。
+        this.indexSources(store, row.entry_id, sources)
         return { entry_id: row.entry_id, merged: true, merged_into: row.entry_id }
       }
     }
@@ -147,7 +149,51 @@ export class TriLibrary {
     this.db.raw
       .prepare(`INSERT INTO ${store} (entry_id, statement, ext, source_papers, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`)
       .run(entryId, statement, JSON.stringify(ext), JSON.stringify(sourcePapers), now, now)
+    this.indexSources(store, entryId, sourcePapers)
     return { entry_id: entryId, merged: false }
+  }
+
+  /**
+   * 反向索引（论文 → 条目）的写入端（迁移 v6）。
+   *
+   * 为什么不做成 SQL 触发器：`source_papers` 是 JSON，触发器里解析等于把"合并语义"
+   * 从 TypeScript 复制到 SQL——两份实现迟早分叉（本项目已有多次教训）。
+   * 这里只做 `INSERT OR IGNORE`，与条目写入在同一次调用内，语义只有一份。
+   */
+  private indexSources(store: StoreName, entryId: string, sourcePapers: readonly string[]): void {
+    const insert = this.db.raw.prepare(
+      'INSERT OR IGNORE INTO entry_sources (paper_id, store, entry_id) VALUES (?, ?, ?)',
+    )
+    for (const paperId of sourcePapers) insert.run(paperId, store, entryId)
+  }
+
+  /**
+   * 反向查询：某篇论文在各库里有哪些条目（整合设计 v1.0 §3.4）。
+   *
+   * @param paperId - 论文 ID。
+   * @param store - 限定某个库；不传则查全部四个库。
+   * @returns 命中的条目（按 store 的顺序分组、组内按 entry_id）。
+   */
+  entriesOfPaper(paperId: string, store?: StoreName): KbEntry[] {
+    const stores: readonly StoreName[] = store === undefined ? STORE_NAMES : [store]
+    const out: KbEntry[] = []
+    const query = this.db.raw.prepare(
+      'SELECT entry_id FROM entry_sources WHERE paper_id = ? AND store = ? ORDER BY entry_id',
+    )
+    for (const target of stores) {
+      for (const row of query.all(paperId, target) as unknown as { entry_id: string }[]) {
+        const entry = this.get(target, row.entry_id)
+        if (entry !== undefined) out.push(entry)
+      }
+    }
+    return out
+  }
+
+  /** 某条目的全部来源论文（反向索引的正向读，用于 `shared_with` 与簇展开）。 */
+  papersOfEntry(store: StoreName, entryId: string): string[] {
+    return (this.db.raw
+      .prepare('SELECT paper_id FROM entry_sources WHERE store = ? AND entry_id = ? ORDER BY paper_id')
+      .all(store, entryId) as unknown as { paper_id: string }[]).map((row) => row.paper_id)
   }
 
   get(store: StoreName, entryId: string): KbEntry | undefined {
