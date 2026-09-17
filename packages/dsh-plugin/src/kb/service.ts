@@ -21,6 +21,7 @@ import { STORE_NAMES, type ExtensionFields, type KbEntry, type PaperExtraction, 
 import { PaperDatabase } from './db.js'
 import { PaperLibrary } from './library.js'
 import type { UpsertPaperOutcome } from './library.js'
+import { ModuleLibrary, type ModuleKind, type ModuleRecord, type ModuleUpsert, type ModuleUpsertOutcome } from './modules.js'
 import { TriLibrary } from './trilibrary.js'
 import type { SearchOptions, TriLibrarySummary } from './trilibrary.js'
 
@@ -133,6 +134,20 @@ export interface KbApi {
   papersSharingProblem(problemEntryId: string): string[]
   /** 某条目的全部来源论文。 */
   papersOfEntry(store: StoreName, entryId: string): string[]
+  /** 写入一个模块（归一化名命中即合并）；返回可能的同机制候选供 Analyst 判定。 */
+  upsertModule(input: ModuleUpsert): ModuleUpsertOutcome
+  /** 检索模块（撞车"模块轴"入口）。 */
+  searchModules(options?: { query?: string; kinds?: readonly ModuleKind[]; paperId?: string; limit?: number }): ModuleRecord[]
+  /** 读一个模块。 */
+  getModule(moduleId: string): ModuleRecord | undefined
+  /** 某篇论文贡献的模块。 */
+  modulesOfPaper(paperId: string): ModuleRecord[]
+  /** 用了某个模块的全部论文。 */
+  papersOfModule(moduleId: string): string[]
+  /** 模块总数。 */
+  moduleCount(): number
+  /** 合并两条模块（Analyst 判定为同一机制时调用）。 */
+  mergeModules(fromId: string, intoId: string): ModuleRecord
 }
 
 export class KbService extends Service implements KbApi {
@@ -140,6 +155,7 @@ export class KbService extends Service implements KbApi {
 
   private readonly library: PaperLibrary
   private readonly entries: TriLibrary
+  private readonly modules: ModuleLibrary
   private readonly database: PaperDatabase
 
   constructor(ctx: Context, config: Config = {}) {
@@ -147,6 +163,7 @@ export class KbService extends Service implements KbApi {
     const resolved = resolveKbConfig(config)
     this.database = new PaperDatabase(resolved.dbPath)
     this.library = new PaperLibrary(this.database)
+    this.modules = new ModuleLibrary(this.database)
     this.entries = new TriLibrary(this.database)
   }
 
@@ -293,6 +310,43 @@ export class KbService extends Service implements KbApi {
   /** 某条目的全部来源论文（通用版，四个库都可用）。 */
   papersOfEntry(store: StoreName, entryId: string): string[] {
     return this.entries.papersOfEntry(store, entryId)
+  }
+
+  // ── 模块清单（整合设计 v1.0 §3.5）：逐模块撞车的对齐对象 ────────────────
+
+  /** 写入一个模块（归一化名命中即合并）。 */
+  upsertModule(input: ModuleUpsert): ModuleUpsertOutcome {
+    return this.modules.upsert(input)
+  }
+
+  /** 检索模块（撞车"模块轴"入口）。 */
+  searchModules(options?: { query?: string; kinds?: readonly ModuleKind[]; paperId?: string; limit?: number }): ModuleRecord[] {
+    return this.modules.search(options)
+  }
+
+  /** 读一个模块。 */
+  getModule(moduleId: string): ModuleRecord | undefined {
+    return this.modules.get(moduleId)
+  }
+
+  /** 某篇论文贡献的模块。 */
+  modulesOfPaper(paperId: string): ModuleRecord[] {
+    return this.modules.modulesOfPaper(paperId)
+  }
+
+  /** 用了某个模块的全部论文。 */
+  papersOfModule(moduleId: string): string[] {
+    return this.modules.papersOfModule(moduleId)
+  }
+
+  /** 模块总数（摘要与验收用）。 */
+  moduleCount(): number {
+    return this.modules.count()
+  }
+
+  /** 合并两条模块（Analyst 判定为同一机制时调用）。 */
+  mergeModules(fromId: string, intoId: string): ModuleRecord {
+    return this.modules.merge(fromId, intoId)
   }
 
   // ── Domain Pack 派生所需的原始视图（P3-5）─────────────────────────────────

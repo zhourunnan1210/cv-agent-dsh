@@ -279,6 +279,74 @@ export const MIGRATIONS: readonly Migration[] = [
         SELECT j.value, 'failures', f.entry_id FROM failures f, json_each(f.source_papers) j;
     `,
   },
+  {
+    /**
+     * **模块清单**（整合设计 v1.0 §3.5）：逐模块撞车的对齐对象。
+     *
+     * ## 为什么它是这一版设计的关键
+     *
+     * 论文是「复杂的方法集合」。旧机制只能回答"整体像不像"（而且用字符重合度算），
+     * 无法表达最常见的撞车形态——**"你的 3 个模块里，有 2 个库里已经有了"**。
+     * 要表达它，库里必须有一份**可对齐的模块清单**。
+     *
+     * ## 为什么不新造数据
+     *
+     * `innovations` 库已经是 **69 条可命名机制**（≈ 每篇 3.3 条，43–148 字，
+     * 带 `innovation_type` 与关联 ID）——它就是现成的模块来源。本层做两件事：
+     * **同族归一合并** + **从 L2 的 `method_modules` 持续汇入**（后者随粒度契约落地）。
+     *
+     * ## 与 `innovations` 的区别（为什么两张表都要）
+     *
+     * - `innovations`：**一篇论文的增量**——"这篇论文提出了什么新机制"（归属论文）；
+     * - `modules`：**跨论文的机制族**——"这个机制在库里被谁用过"（归属机制）。
+     * 同一条 innovation 只能属于一篇论文，但同一个模块可以有多篇来源；
+     * 撞车问的是后者，新颖性问的是前者。
+     *
+     * ## 表结构要点
+     *
+     * - `origin_innovations` 保留到 L3 的可追溯链（谁派生了我）；
+     * - `origin_papers` 是合并后的来源论文集合；
+     * - FTS5 用 trigram（与四库同源），中文 2 字查询仍由 `LIKE` 回退兜底。
+     */
+    version: 7,
+    up: `
+      CREATE TABLE IF NOT EXISTS modules (
+        module_id          TEXT PRIMARY KEY,
+        name               TEXT NOT NULL,
+        statement          TEXT NOT NULL,
+        kinds              TEXT NOT NULL DEFAULT '[]',
+        origin_papers      TEXT NOT NULL DEFAULT '[]',
+        origin_innovations TEXT NOT NULL DEFAULT '[]',
+        ext                TEXT NOT NULL DEFAULT '{}',
+        created_at         TEXT NOT NULL,
+        updated_at         TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_modules_name ON modules(name);
+
+      CREATE VIRTUAL TABLE IF NOT EXISTS modules_fts USING fts5(
+        name, statement, content='modules', content_rowid='rowid', tokenize='trigram'
+      );
+
+      CREATE TRIGGER IF NOT EXISTS modules_fts_ai AFTER INSERT ON modules BEGIN
+        INSERT INTO modules_fts(rowid, name, statement) VALUES (new.rowid, new.name, new.statement);
+      END;
+      CREATE TRIGGER IF NOT EXISTS modules_fts_ad AFTER DELETE ON modules BEGIN
+        INSERT INTO modules_fts(modules_fts, rowid, name, statement) VALUES ('delete', old.rowid, old.name, old.statement);
+      END;
+      CREATE TRIGGER IF NOT EXISTS modules_fts_au AFTER UPDATE ON modules BEGIN
+        INSERT INTO modules_fts(modules_fts, rowid, name, statement) VALUES ('delete', old.rowid, old.name, old.statement);
+        INSERT INTO modules_fts(rowid, name, statement) VALUES (new.rowid, new.name, new.statement);
+      END;
+
+      -- 反查：哪些模块来自哪篇论文（撞车"模块轴"展开用）
+      CREATE TABLE IF NOT EXISTS module_sources (
+        paper_id  TEXT NOT NULL,
+        module_id TEXT NOT NULL,
+        PRIMARY KEY (paper_id, module_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_module_sources_module ON module_sources(module_id);
+    `,
+  },
 ]
 
 /** papers 表与三库+失败库的 SQLite 行形态。 */
