@@ -48,6 +48,14 @@
       "types": "./lib/kb/mineru-quota-service.d.ts",
       "default": "./lib/kb/mineru-quota-service.js"
     },
+    "./idea-score": {
+      "types": "./lib/scoring/service.d.ts",
+      "default": "./lib/scoring/service.js"
+    },
+    "./idea-tools": {
+      "types": "./lib/scoring/tools.d.ts",
+      "default": "./lib/scoring/tools.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [

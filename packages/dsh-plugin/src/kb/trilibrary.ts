@@ -70,6 +70,33 @@ function mergeExt(base: ExtensionFields, incoming: ExtensionFields): ExtensionFi
   return merged
 }
 
+/**
+ * 把用户查询编译成 FTS5 查询串（词项间 `OR`）。
+ *
+ * ⚠️ **不能把整个查询串当短语**（`"整句话"`）：实测长查询（如 idea 的「问题 + 方法」
+ * 组合串）在任何文档里都不可能连续出现，短语匹配**恒为空**——而空结果不会抛异常，
+ * 于是静默返回"库里没有"。正确做法是拆词项后 `OR`，由 bm25 按命中词项数排序。
+ *
+ * 中文没有空格分词：除按非字母数字切词外，还把 CJK 连续段切成 3 字滑窗
+ * （与 trigram 索引粒度对齐）。少于 3 字符的项 trigram 索引不到，直接丢弃
+ * （由 `searchOne` 的 LIKE 回退兜底）。
+ */
+export function compileFtsQuery(query: string): string | undefined {
+  const terms = new Set<string>()
+  for (const token of query.toLowerCase().split(/[^\p{L}\p{N}]+/u)) {
+    if (token.length === 0) continue
+    const isCjk = /[\u3400-\u9fff\uf900-\ufaff\u3040-\u30ff]/.test(token)
+    if (!isCjk) {
+      if (token.length >= 3) terms.add(token)
+      continue
+    }
+    if (token.length < 3) continue
+    for (let i = 0; i + 3 <= token.length; i += 1) terms.add(token.slice(i, i + 3))
+  }
+  if (terms.size === 0) return undefined
+  return [...terms].map((term) => `"${term.replace(/"/g, '""')}"`).join(' OR ')
+}
+
 /** 三库写入服务。 */
 export class TriLibrary {
   private readonly db: PaperDatabase
@@ -131,17 +158,18 @@ export class TriLibrary {
   }
 
   /**
-   * 三库检索（`cvagent_kb_search` 的底座）。
+   * 知识库检索（`cvagent_kb_search` 的底座）。
    *
    * 两条路径（S4 spike 的实测结论，见 db.ts 迁移 v4 注释）：
-   * - 查询串 **≥3 字符** → FTS5 `MATCH`（trigram）。查询串整体当作一个短语，用双引号
-   *   包住交给 FTS5，避免把 `-`/`OR`/`*` 之类当语法解析（用户/模型输入不可信）；
-   * - 查询串 **<3 字符**（或 FTS5 报错）→ `LIKE '%…%'` 回退。trigram 索引查不到
-   *   2 字中文，而「泛化」这类两字词恰恰是常用检索词。
+   * - 查询串里能抽出 **≥3 字符的词项** → FTS5 `MATCH`（trigram，词项间 `OR`，
+   *   见 `compileFtsQuery`）；**命中为空时再走一次 LIKE**——因为"短语不匹配"
+   *   不会抛异常，静默空结果会被误读成"库里没有相关工作"；
+   * - 抽不出词项（如 2 字中文）或 FTS5 报错 → `LIKE '%…%'` 回退。trigram 索引
+   *   查不到 2 字中文，而「泛化」这类两字词恰恰是常用检索词。
    *
-   * 过滤：store（缺省搜索三个库）、source_paper（该论文作为来源之一）。
+   * 过滤：store（缺省搜索四个库）、source_paper（该论文作为来源之一）。
    * 排序：命中相关性（FTS5 `rank`）优先，其次 entry_id；跨库时按 problems → methods
-   * → innovations 分组返回，便于调用方按角色消费。
+   * → innovations → failures 分组返回，便于调用方按角色消费。
    */
   search(options: SearchOptions = {}): KbEntry[] {
     const stores: readonly StoreName[] = options.store === undefined
@@ -167,9 +195,8 @@ export class TriLibrary {
     }
 
     if (query !== '') {
-      // ≥3 字符才走 FTS5（trigram 的下限）；否则 LIKE
-      if ([...query].length >= 3) {
-        const ftsQuery = `"${query.replace(/"/g, '""')}"`
+      const ftsQuery = compileFtsQuery(query)
+      if (ftsQuery !== undefined) {
         try {
           const where = [`${store}_fts MATCH ?`, ...filters]
           const rows = this.db.raw
@@ -180,9 +207,10 @@ export class TriLibrary {
               ORDER BY f.rank LIMIT ?
             `)
             .all(ftsQuery, ...params, limit) as unknown as EntryRow[]
-          return rows
+          // 命中为空 → 继续走 LIKE：词项 OR 没命中不代表子串里没有（也避免"静默空结果"）
+          if (rows.length > 0) return rows
         } catch {
-          // FTS5 不可用/语法异常 → 落到 LIKE（宁可慢一点，也不要静默空结果）
+          // FTS5 异常 → 落到 LIKE（宁可慢一点，也不要静默空结果）
         }
       }
       filters.push(`t.statement LIKE ?`)

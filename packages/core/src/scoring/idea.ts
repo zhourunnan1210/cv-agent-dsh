@@ -164,8 +164,8 @@ export interface SimilarPaper {
 export interface CollisionEvidence {
   /** 撞到的条目/论文 ID（三库条目用 entry_id，论文用 paper_id）。 */
   readonly ref_id: string
-  /** 命中来源：哪个库，或论文库。 */
-  readonly source: 'problems' | 'methods' | 'innovations' | 'papers'
+  /** 命中来源：哪个库，或论文库。`failures` 是第四库（失败方法库，P3-3c 加入）。 */
+  readonly source: 'problems' | 'methods' | 'innovations' | 'failures' | 'papers'
   /** 检索侧的陈述片段（供人复核"它到底是不是同一件事"）。 */
   readonly statement_excerpt: string
   /** 确定性的相似度估计（∈[0,1]，语义由 `retrieval_mode` 决定，见 §11.5）。 */
@@ -222,6 +222,20 @@ export interface ScoringReport {
   readonly retrieval_mode: 'vector' | 'keyword_only'
   /** 是否触发了外部（Asta）外扩检索（P3-3 新增）。 */
   readonly escalated_external?: boolean
+  /**
+   * 失败方法库复查结果（P3-3c 新增，勘误 §12.2）。
+   *
+   * 语义：命中失败库**不直接丢弃** idea——`blocked_by` 非空表示"失败条件仍然成立"，
+   * `waivers` 记录"为什么这次不一样"（由裁判给出，必须写理由）。
+   */
+  readonly failure_review?: {
+    /** 检出的相关失败条目 ID。 */
+    readonly hit_refs: readonly string[]
+    /** 判定为"条件仍成立"的失败条目（这些才是真正阻塞的）。 */
+    readonly blocked_by: readonly string[]
+    /** 判定为"条件已变、值得再试"的失败条目及理由。 */
+    readonly waivers: readonly { readonly ref_id: string; readonly reason: string }[]
+  }
   /** 裁判标识与时间（P3-3 新增，审计用）。 */
   readonly judged_by?: string
   readonly judged_at?: string

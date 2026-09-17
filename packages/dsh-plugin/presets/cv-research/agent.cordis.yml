@@ -104,6 +104,18 @@
     - id: tool-cvagent-kb-entries
       name: cv-agent-dsh/kb-entries
 
+    # P3-3b: ideaScore 服务 + idea 族工具（生成 / 打分）。
+    #
+    # ⚠️ 这两行**必须留在本 group 内**：`ideaScore` 的状态就是 `kb`（§4.4.1 裁定
+    # "无自有状态 + 读 kb"），它 inject kb 才能读到同一个库实例。若另起一个
+    # `isolate: { kb: true }` 的 group，会得到**同一文件上的第二个 kb 实例**
+    # （两份缓存、两次迁移检查），去重与检索语义就会分叉。
+    - id: cvagent-idea-score
+      name: cv-agent-dsh/idea-score
+
+    - id: tool-cvagent-idea
+      name: cv-agent-dsh/idea-tools
+
 # ── orchestrator execution-level guard (E20) ───────────────────────────────
 #
 # Provides no service — consumes the host `tools` event surface and the host

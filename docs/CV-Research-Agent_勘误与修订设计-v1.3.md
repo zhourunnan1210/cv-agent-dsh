@@ -1100,6 +1100,32 @@ Asta: 2345.67890 (sim=?, 标题/摘要) …      ← 标记 external=true
 > 打分器侧已就绪：`applyJudgment()` 只接受逐条判定，撞车维度封顶 20 分、表面相似剔除、
 > 可行性采用裁判值且越界回落；`recomputeTotal()` 保证报告可复算（`core/tests/score.test.ts` 19 条）。
 
+### 11.9 P3-3b 已交付（2026-09-17）
+
+| 交付物 | 内容 |
+| --- | --- |
+| `ideaScore` 服务（preset，与 `kb` 同 realm） | pack 装载（**冻结产物优先、回落草案、未冻结如实标记**；两者都缺直接报错"没有权重的打分没有意义"）、四库召回、证据派生、裁判上下文组装、确定性聚合、`verify()` 复算校验 |
+| `cvagent_idea_generate` | N 视角并发 Generator（视角缺省取自问题库）→ 跨视角**合并去重**；每个视角的状态如实区分 `ok / duplicate / empty / error`（"想出来了但别人说过"与"确实没方向"是两种信息）；委派契约：`spawn` + `toolFilter={cvagent_kb_search,cvagent_kb_summary}` + `maxDepth:0` |
+| `cvagent_idea_score` | 本地召回 → **边界带命中则返回 `needs_external_evidence`**（外扩检索由主 Agent 用 `mcp__asta__*` 执行后回传，因为工具不能调用别的工具）→ 委派裁判（逐条判定 + feasibility + 总分理由；**不给四维分值**）→ 确定性聚合 → 失败库复查结论（`blocked_by` / `waivers`） |
+| 工具行落位 | 两行加进 `cvagent-kb-group`（**不能另起 group**：那会在同一 DB 上得到第二个 kb 实例，两份缓存、语义分叉） |
+| 测试 | `tests/idea-service.test.ts` **8 条**（pack 三态、四库召回、派生、聚合与自洽、失败库 blocked/waivers、裁判上下文）+ `tests/idea-tools.test.ts` **8 条**（目录契约、生成合并与四态、缺视角回退、打分全链、外扩往返、契约刚性两条）。dsh-plugin 测试数 **86 → 102** |
+
+**顺带修掉一个会造成系统性假阴性的检索 bug（重要）**：
+
+`TriLibrary.search` 原先把整个查询串当**短语**交给 FTS5（`"整句话"`）。对 idea 打分用的
+「问题 + 方法」组合长串，短语在任何文档里都不可能连续出现 → **恒为空**；而空结果不抛异常，
+于是静默返回"库里没有相关工作"。后果是**每一条 idea 都会因"查不到撞车"而虚高**。
+
+修复：`compileFtsQuery()` 把查询拆成词项后 `OR`（中文按 3 字滑窗，与 trigram 粒度对齐；
+<3 字符项交给 LIKE 回退），并且**FTS 命中为空时再走一次 LIKE**。生产库实测：
+
+```
+[组合查询] 跨数据集泛化不足 频域分支替换 → problems: P011,P002  innovations: I009,I030  failures: F015,F032
+[组合查询] 可解释性缺失 CLIP 适配器       → problems: P004,P012  innovations: I020,I065  failures: F067,F065
+```
+
+
+
 ---
 
 ## 12. 需求细化（二）：检索 / 三库 / Idea / 实验四段的现状与设计（2026-09-17）
