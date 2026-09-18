@@ -34,10 +34,14 @@ await mkdir(env.cacheDir, { recursive: true })
 /**
  * 精度选择：**默认 q8 量化版**。
  *
- * 理由很实际：这条网络下 fp32 的 `model.onnx`（约 118MB）在代理下要跑近 45 分钟，
- * 而 q8 的 `model_quantized.onnx`（约 33MB）十分钟内能下完。对"排序用的句向量相似度"
- * 来说量化损失远小于收益——**而且本层的相似度只用于排序，不参与判定与打分**（§5.4），
- * 精度要求本来就不高。
+ * 实测体积（HF API `?blobs=true`，2026-09-17）：
+ *   Xenova/onnx/model_quantized.onnx（q8）  112.8MB
+ *   Xenova/onnx/model.onnx（fp32）          448.5MB
+ * 差距近 4 倍，而本层的相似度只用于**排序**，不参与判定与打分（§5.4），
+ * 精度要求本来就不高——量化损失远小于收益。
+ *
+ * ⚠️ 缓存文件名必须与 dtype 对应：q8 → `model_quantized.onnx`，fp32 → `model.onnx`。
+ * 手工放文件时名字写错，transformers.js 会当成"缓存里没有"而重新联网下载。
  *
  * 可用 `--fp32` 切回全精度；也可手动把两种文件都放好，脚本会自动挑存在的那个。
  */
@@ -45,7 +49,7 @@ const wantsFp32 = process.argv.includes('--fp32')
 const dtype = wantsFp32 ? 'fp32' : 'q8'
 
 console.log(`模型：${MODEL}`)
-console.log(`精度：${dtype}${wantsFp32 ? '（全精度，约 118MB）' : '（q8 量化，约 33MB）'}`)
+console.log(`精度：${dtype}${wantsFp32 ? '（全精度，约 448MB）' : '（q8 量化，约 113MB）'}`)
 console.log(`缓存：${env.cacheDir}`)
 console.log(`镜像：${process.env.HF_ENDPOINT ?? '(未设置 HF_ENDPOINT，将直连 HF)'}\n`)
 
