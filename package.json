@@ -20,11 +20,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/<your-org>/cv-agent-dsh.git"
+    "url": "git+https://github.com/zhourunnan1210/cv-agent-dsh.git"
   },
-  "homepage": "https://github.com/<your-org>/cv-agent-dsh#readme",
+  "homepage": "https://github.com/zhourunnan1210/cv-agent-dsh#readme",
   "bugs": {
-    "url": "https://github.com/<your-org>/cv-agent-dsh/issues"
+    "url": "https://github.com/zhourunnan1210/cv-agent-dsh/issues"
   },
   "keywords": [
     "deepseek-harness",
