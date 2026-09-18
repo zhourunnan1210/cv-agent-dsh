@@ -4,7 +4,7 @@
  * 不跑真实 LLM，只验证委派契约与编排正确性：
  * - 委派请求形状（provider/parent/label/toolFilter/persona/outputSchema/maxDepth）；
  * - 生成：多视角并发 → 合并去重、空视角与失败视角如实回传（不假装成功）；
- * - 打分：本地召回 → 边界带外扩（回传 needs_external_evidence，由主 Agent 去跑 Asta）
+ * - 打分：子代理读全库粗筛 → 若它说"本地库不够"则回传 needs_external_evidence（由主 Agent 去跑 Asta）
  *   → **三专家面板**（并行委派 + 分歧一轮讨论 + 中位数聚合）；报告自洽；失败库 blocked_by/waivers 透出；
  * - 契约刚性：三位专家全部未按 outputSchema 应答 → 明确 isError，而不是静默给个分；
  *   部分失败 → 按存活专家聚合，但报告必须点名谁没参与。

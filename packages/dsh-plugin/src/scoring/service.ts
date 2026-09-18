@@ -25,18 +25,8 @@ import type { Context } from '@deepseek-ai/cordis'
 import Schema from '@deepseek-ai/schemastery'
 
 import {
-  applyJudgment,
-  classifyBand,
-  classifyRisk,
-  deriveEvidence,
-  lexicalSimilarity,
   moduleAlignment,
-  totalScore,
-  type CollisionEvidence,
-  type DeriveEvidenceInput,
-  type HitInput,
   type IdeaCandidate,
-  type JudgeInput,
   type PanelAudit,
   type ScoringConfig,
   type ScoringDimensions,
@@ -44,7 +34,6 @@ import {
 } from '@cv-research/core'
 
 import type { KbService } from '../kb/service.js'
-import type { KbEntry } from '@cv-research/core'
 import { collide, type CollideKbPort, type CollisionReport } from './collide.js'
 import type { PanelResult } from './panel.js'
 import type { ScreenKbPort, ScreeningResult } from './screen.js'
@@ -100,13 +89,6 @@ export interface PackLoad {
   readonly frozen: boolean
   readonly frozen_by: string | null
   readonly path: string
-}
-
-/** 某条候选证据的来源（进上下文的最小形态）。 */
-export interface RetrievedEvidence {
-  readonly hits: readonly HitInput[]
-  readonly failure_hits: readonly HitInput[]
-  readonly retrieval_mode: 'keyword_only' | 'vector'
 }
 
 export class IdeaScoreService extends Service {
@@ -236,119 +218,6 @@ export class IdeaScoreService extends Service {
   }
 
   /**
-   * 确定性召回：三个库 + 失败库各取 topk 条候选，映射为证据行。
-   *
-   * 注意哪一侧用什么查询串：
-   * - problems 侧用 `idea.problem`；methods 侧用 `idea.method`；
-   * - innovations 与 failures 侧用「problem + method」的组合串（它们最接近"这件事做过了吗"）。
-   */
-  async retrieve(idea: Pick<IdeaCandidate, 'problem' | 'method' | 'statement'>): Promise<RetrievedEvidence> {
-    const pack = await this.loadPack()
-    const topk = this.options.topk
-    const kb = this.ctx.kb as KbService
-    const comboQuery = `${idea.problem} ${idea.method}`.trim()
-
-    const toHits = (entries: readonly KbEntry[], query: string): HitInput[] => entries.map((entry) => ({
-      ref_id: entry.entry_id,
-      source: entry.store,
-      statement: entry.statement,
-      // backend_score 不传：让 core 用自带的有界相似度估计（FTS5 rank 不可比，§11.5）
-      backend_score: lexicalSimilarity(query, entry.statement),
-      external: false,
-    }))
-
-    const problemHits = toHits(kb.searchEntries({ store: 'problems', query: idea.problem, limit: topk }), idea.problem)
-    const methodHits = toHits(kb.searchEntries({ store: 'methods', query: idea.method, limit: topk }), idea.method)
-    const comboHits = toHits(kb.searchEntries({ store: 'innovations', query: comboQuery, limit: topk }), comboQuery)
-    const failureHits = toHits(kb.searchEntries({ store: 'failures', query: comboQuery, limit: topk }), comboQuery)
-    // pack 里可能有更严的边界带（keyword_only 实测校准值），服务配置可覆盖
-    void pack
-    return { hits: [...problemHits, ...methodHits, ...comboHits], failure_hits: failureHits, retrieval_mode: 'keyword_only' }
-  }
-
-  /**
-   * 证据派生（确定性）：只算**基线分与证据行**。
-   *
-   * ⚠️ 原来这里还带"边界带 → 建议外扩"的判据，2026-09-18 已按用户裁定删除
-   * （同义改写的相似度 0.0039 落在 0.10 以下，最该外扩的情况反而不触发）。
-   * 外扩判断现在由 `screen.ts` 的粗筛子代理做——它读过全库，是链路上唯一有资格
-   * 回答"库够不够"的东西。
-   */
-  async derive(idea: Pick<IdeaCandidate, 'problem' | 'method'>, evidence: RetrievedEvidence) {
-    const input: DeriveEvidenceInput = {
-      problem: idea.problem,
-      method: idea.method,
-      problemHits: evidence.hits.filter((hit) => hit.source === 'problems'),
-      methodHits: evidence.hits.filter((hit) => hit.source === 'methods'),
-      comboHits: [
-        ...evidence.hits.filter((hit) => hit.source === 'innovations'),
-        ...evidence.failure_hits,
-      ],
-      retrievalMode: evidence.retrieval_mode,
-    }
-    return deriveEvidence(input)
-  }
-
-  /**
-   * 聚合为打分报告（确定性）：裁判判定 + 证据 → 四维分 → 总分/档位/风险/失败库复查。
-   *
-   * `pack_frozen: false` 时报告里带 `rationale` 前缀告警——草案权重不算权威口径。
-   */
-  async aggregate(options: {
-    idea: IdeaCandidate
-    derived: ReturnType<typeof deriveEvidence>
-    judge: JudgeInput
-    evidence: RetrievedEvidence
-    escalatedExternal?: boolean
-  }): Promise<ScoringReport & { pack_frozen: boolean; pack_ref: string; weight_sum: number }> {
-    const pack = await this.loadPack()
-    const judged = applyJudgment(options.derived, options.judge)
-    const dimensions = judged.dimensions
-    const total = totalScore(dimensions, pack.config)
-    const suggestion = classifyBand(total, pack.config)
-    const risk = classifyRisk(judged.evidence, pack.config, options.evidence.retrieval_mode)
-
-    // 失败库复查：命中不直接丢弃——blocked_by 与 waivers 都来自裁判的逐条判定
-    const failureRefs = new Set(options.evidence.failure_hits.map((hit) => hit.ref_id))
-    const failureEvidence = judged.evidence.filter((item) => failureRefs.has(item.ref_id))
-    const failureReview = {
-      hit_refs: [...failureRefs],
-      blocked_by: failureEvidence.filter((item) => item.verdict === 'collision').map((item) => item.ref_id),
-      waivers: failureEvidence
-        .filter((item) => item.verdict === 'superficial')
-        .map((item) => ({ ref_id: item.ref_id, reason: item.reason })),
-    }
-
-    const similarPapers = judged.evidence
-      .filter((item) => item.source === 'papers' || item.verdict === 'collision')
-      .slice(0, 10)
-      .map((item) => ({ paper_id: item.ref_id, reason: item.reason === '' ? item.statement_excerpt.slice(0, 120) : item.reason, score: item.similarity }))
-
-    const warning = pack.frozen ? '' : `[未冻结 pack：${pack.path} 为草案，权重尚未获人工评审] `
-    const weightSum = Object.values(pack.config.dimensions).reduce((sum, value) => sum + value, 0)
-    return {
-      idea_id: options.idea.idea_id,
-      total,
-      dimensions,
-      dimension_trace: judged.trace,
-      evidence: judged.evidence,
-      weights_snapshot: pack.config.dimensions,
-      risk_level: risk,
-      similar_papers: similarPapers,
-      suggestion,
-      rationale: `${warning}${options.judge.rationale ?? ''}`.trim(),
-      retrieval_mode: options.evidence.retrieval_mode,
-      escalated_external: options.escalatedExternal ?? false,
-      failure_review: failureReview,
-      ...(options.judge.judged_by === undefined ? {} : { judged_by: options.judge.judged_by }),
-      ...(options.judge.judged_at === undefined ? {} : { judged_at: options.judge.judged_at }),
-      pack_frozen: pack.frozen,
-      pack_ref: `${pack.pack_id}@${pack.version}`,
-      weight_sum: weightSum,
-    }
-  }
-
-  /**
    * 由**三专家面板**产出打分报告（整合设计 v1.0 §6.6，替代单裁判链路）。
    *
    * 与 `aggregate` 的区别，正是新机制的要点：
@@ -471,36 +340,6 @@ export class IdeaScoreService extends Service {
     }
   }
 
-  /** 组装裁判上下文（工具层把它交给裁判子代理；**不在本层调用 LLM**）。 */  buildJudgePayload(options: {
-    idea: Pick<IdeaCandidate, 'statement' | 'problem' | 'method' | 'innovation'>
-    derived: ReturnType<typeof deriveEvidence>
-    evidence: RetrievedEvidence
-    external?: readonly { ref_id: string; statement: string; similarity?: number }[]
-  }): string {
-    const lines: string[] = []
-    lines.push('[候选 idea]')
-    lines.push(`陈述：${options.idea.statement}`)
-    lines.push(`问题侧：${options.idea.problem}`)
-    lines.push(`方法侧：${options.idea.method}`)
-    lines.push(`预期创新：${options.idea.innovation}`)
-    lines.push('')
-    lines.push(`[本地证据 top-${options.evidence.hits.length + options.evidence.failure_hits.length}]（source, 相似度）：`)
-    for (const item of options.derived.evidence) {
-      lines.push(`- ${item.ref_id} (${item.source}, sim=${item.similarity.toFixed(3)}) ${item.statement_excerpt}`)
-    }
-    if (options.external !== undefined && options.external.length > 0) {
-      lines.push('')
-      lines.push(`[外扩检索证据 ${options.external.length} 条]（external=true）：`)
-      for (const item of options.external) {
-        lines.push(`- ${item.ref_id} (external, sim=${(item.similarity ?? 0).toFixed(3)}) ${item.statement.slice(0, 160)}`)
-      }
-    }
-    lines.push('')
-    lines.push('任务：对**每一条**证据判定 collision（实质撞车/失败条件仍成立）或 superficial（只是表面相似/条件已变），并给出理由。')
-    lines.push('不要给总分，也不要给出四维分值——分数由系统从你的逐条判定算出。')
-    return lines.join('\n')
-  }
-
   /** 复算校验（工具层/审计用）：报告是否自洽。 */
   verify(report: ScoringReport): { consistent: boolean; recomputed: number } {
     const weights = report.weights_snapshot ?? { novelty_problem: 30, novelty_method: 30, novelty_combo: 25, feasibility: 15 }
@@ -535,4 +374,4 @@ export function riskFromPanel(
 export default IdeaScoreService
 
 /** 供测试与工具层复用的类型再导出。 */
-export type { CollisionEvidence, ScoringDimensions }
+export type { ScoringDimensions }
