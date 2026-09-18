@@ -628,7 +628,7 @@ dsh --profile cvspike --port 0 --no-open                              # 启动�
 | 1 | S2 端到端：真实子代理的 `toolFilter` / `outputSchema` 行为 | 需要 web profile 加载 `cv-agent-dsh` 的委派工具；当前宿主进程正承载本次对话 | bundle 装载已验证（§5.4），待 `cv-agent-dsh` 首批工具落地后由我实跑 |
 | 2 | S6 端到端：`ask_user_question` 的门控呈递行为 | 同上 | 同上 |
 | 3 | S3 MinerU 本地吞吐 | 需要 4090 机器 + MinerU 部署 | 与 dsh 侧并行，不阻塞 |
-| 4 | S4 sqlite-vec 压测 | 需要选定 embedding 维度 | ✅ **已解决（2026-09-17，`scripts/spike-s4-retrieval.mjs`）**：结论是我们这个规模**不需要向量索引**（1000 条 × 768 维暴力全扫 **1.19ms/次**，Phase 3 的几百条更不在话下）；FTS5 可用，中文检索走 `tokenize='trigram'` 且**查询串须 ≥3 字符**（2 字中文查不到，实测边界）；`node:sqlite` 加载扩展需 `new DatabaseSync(path, { allowExtension: true })`（sqlite-vec 技术上可加载）。**剩下的是 embedding 来源决策，不是索引决策**（见 §9） |
+| 4 | S4 sqlite-vec 压测 | 需要选定 embedding 维度 | ✅ **已解决（2026-09-17，`scripts/spike-s4-retrieval.mjs`）**：结论是我们这个规模**不需要向量索引**（1000 条 × 768 维暴力全扫 **1.19ms/次**，Phase 3 的几百条更不在话下）；FTS5 可用，中文检索走 `tokenize='trigram'` 且**查询串须 ≥3 字符**（2 字中文查不到，实测边界）；`node:sqlite` 加载扩展需 `new DatabaseSync(path, { allowExtension: true })`（sqlite-vec 技术上可加载）。**剩下的是 embedding 来源决策，不是索引决策**（见 §9）——该决策已于 2026-09-18 落定：**不上向量**（实测否决，见 §9.3 引文） |
 | 5 | S5 MCP 封装 | 依赖 core 层有可封装的接口 | ✅ **已完成（2026-09-17，见 §13）**：`@cv-research/mcp` 实现 MCP 协议层 + 三个工具（`kb_search` / `kb_summary` / `idea_score`）+ stdio 服务端；`packages/dsh-plugin` 新增 sqlite → core `KnowledgeBase` 的**只读适配器**（core 那份契约此前一直只是文档，没有实现）。验收脚本 `scripts/mcp-client-smoke.mjs` 以**另一个 MCP 客户端**的身份真起进程、真握手、真调用真实库 |
 | 6 | ai4scholar.net 真实调用与计费标定 | 需要 API key 与额度 | Phase 2 前（影响 §20 成本模型） |
 
@@ -879,7 +879,7 @@ Phase 2 留下的最大缺口是「243 篇 Asta 论文只有元数据」。已�
 - **FTS5 可用**，中文检索走 `tokenize='trigram'`（实测 3 字/4 字查询命中，**2 字查询查不到**——trigram 的硬限制）；
 - `node:sqlite` 加载扩展需显式 `{ allowExtension: true }`（sqlite-vec 技术上可加载，但不是必需）。
 
-→ **剩下的决策是「embedding 从哪来」，不是「用什么索引」**。当前部署只有 `deepseek-official` 对话模型，无 embedding 服务，故三选一：① 本地 ONNX 小模型（如 bge-small-zh，零 API 成本，需一次性下载）；② 外部 embedding API（需 key，代理已具备）；③ 暂不上向量，先用 FTS5 trigram + 三库结构化字段（零依赖，语义召回弱）。
+→ **剩下的决策是「embedding 从哪来」，不是「用什么索引」**（已于 2026-09-18 落定为"不上向量"，见下方引文）。当前部署只有 `deepseek-official` 对话模型，无 embedding 服务，故三选一：① 本地 ONNX 小模型（如 bge-small-zh，零 API 成本，需一次性下载）；② 外部 embedding API（需 key，代理已具备）；③ 暂不上向量，先用 FTS5 trigram + 三库结构化字段（零依赖，语义召回弱）。
 
 > **2026-09-18 裁定：选 ③，向量这条路走完 ① 之后被实测否决。**
 > ① 已完整落地过一遍（本地 q8 ONNX，112.8MB，离线 0.9s 加载），并写了校准脚本
@@ -889,8 +889,8 @@ Phase 2 留下的最大缺口是「243 篇 Asta 论文只有元数据」。已�
 > 而 core 里预估的向量口径 `[0.7, 0.9)` 只覆盖 1.2% 的正例，等于死代码。
 > 更直接的一条：**语义排序还不如字面排序**（modules 库 P@1 24.6% vs 30.4%）。
 > 完整数据、原因分析与"要让它变成能开需要什么"写在
-> `docs/论文库与撞车打分整合设计-v1.0.md` §9.3。
-> 代码保留为默认关闭的接入点（`embeddingEnabled`，默认 `false`），
+> `docs/论文库与撞车打分整合设计-v1.0.md` §9.1。
+> 相关代码、依赖与模型缓存**已全部删除**（不留"默认关闭的接入点"），
 > `retrieval_mode` 维持在 `keyword_only`。
 
 ### 9.4 进 Phase 3 前的待办
@@ -898,7 +898,7 @@ Phase 2 留下的最大缺口是「243 篇 Asta 论文只有元数据」。已�
 1. **代理恢复** → 跑完剩余 170 篇全文抓取（`--prepare` → paper-fetch → `--ingest`）；
 2. **宿主重启一次** → 让 `cvagent_kb_extract` 行与新的 skill 根配置生效（E21），随后按 §8.6 清单收口真实端到端；
 3. **额度**：2000 页/天。剩余 66 篇已抓论文约 800 页，跨天即可完成；243 篇整体约 2900 页，按天推进；
-4. ~~**embedding 来源决策**（§9.3 的三选一）~~ → **已裁定：不上向量**（2026-09-18，见 §9.3 引文）。
+4. ~~**embedding 来源决策**（§9.3 的三选一）~~ → **已裁定：不上向量**（2026-09-18，见本节引文）。
 
 > 2026-09-17 用户裁定：**抓取不再继续**（不影响开发主线），全文抓取随时可续（脚本幂等）。
 
@@ -991,7 +991,7 @@ node scripts/freeze-pack.mjs --reviewer "<评审人标识>" --bind
 
 | 环节 | 归属 | 理由 |
 | --- | --- | --- |
-| 候选召回（三库 + 论文库） | **确定性**（当前 FTS5，embedding 落地后升级） | 可复现、可审计；`retrieval_mode` 降级标记的所在 |
+| 候选召回（三库 + 论文库） | **确定性**（FTS5 trigram + 结构化字段；语义检索已实测否决并删除） | 可复现、可审计；`retrieval_mode` 降级标记的所在 |
 | 相似度**数值** | **确定性**（见 §11.5 的两模式方案） | pack 的 `high_risk_similarity=0.85` 只有对确定性数值才有意义 |
 | idea 生成（问题×方法重组 / 找 gap） | **LLM**（N 个视角 Generator，委派） | 综合创造，规则写不出来 |
 | 语义撞车判定 | **LLM 裁判 + 检索证据** | 检索只给候选，判定要读内容 |
@@ -1031,7 +1031,7 @@ cvagent_idea_score
 
 | 模式 | 相似度来源 | 标记 | 说明 |
 | --- | --- | --- | --- |
-| `vector` | embedding 余弦 ∈ [0,1] | **当前不可用** | 契约已就位，但**阈值定不出来**：core 预估的向量边界带在真实库上只覆盖 1.2% 正例（2026-09-18 实测，§9.3）；本部署维持 `keyword_only` |
+| `vector` | embedding 余弦 ∈ [0,1] | **当前不可用** | 契约已就位，但**阈值定不出来**：core 预估的向量边界带在真实库上只覆盖 1.2% 正例（2026-09-18 实测，整合设计 §9.1）；本部署维持 `keyword_only` |
 | `keyword_only` | **核心自带**：字符 trigram Jaccard（中文自动退化为纯 trigram，避免整句当一个 token） | **降级**（`retrieval_mode: 'keyword_only'`） | 零依赖、可复现；对同义改写盲（见下），但数值有界可比 |
 
 **用真实语料做的标定**（`scripts/calibrate-similarity2.mjs`：69 对「Analyst 条目 ↔ 其来源论文的创新点原文」当正例，
@@ -1063,7 +1063,7 @@ cvagent_idea_score
 > 都支持 `vector`），但**阈值不工作**：core 里预估的向量边界带 `[0.7, 0.9)` 在真实库上
 > 只覆盖 1.2% 的正例，near-dup `0.85` 的负例触发率 0.00%——它不是"更严格"，是不会触发。
 > 所以 `vector` 模式目前是**有代码、有契约、无可用阈值**的状态，不能自动升级。
-> 详见 `docs/论文库与撞车打分整合设计-v1.0.md` §9.3。
+> 详见 `docs/论文库与撞车打分整合设计-v1.0.md` §9.1。
 
 ### 11.6 待定参数（实现时给默认值，可在 pack 里调）
 
@@ -1601,7 +1601,7 @@ S5 MCP CLIENT SMOKE OK
 
 两点值得注意：
 
-- **降级标记原样透出**（`mode=keyword_only`）。本部署没有 embedding（§9.3 已裁定不上向量），
+- **降级标记原样透出**（`mode=keyword_only`）。本部署没有 embedding（语义检索已实测否决并删除，见 §9.3 引文），
   那就如实说自己是关键词检索——客户端据此判断结论可信度（v1.2 §19）。
 - **`idea_score` 在没有裁判时明确拒绝**，而不是给一个确定性算出来的"分数"。
   打分里的语义判断必须由裁判完成（§11.8）；本进程不接模型，就不该假装能打分。
@@ -1611,7 +1611,7 @@ S5 MCP CLIENT SMOKE OK
 - 独立进程里 `idea_score` 没有裁判：需要真打分时用 dsh 会话里的 `cvagent_idea_score`
   （那边有 LLM 裁判）。若要让它独立可用，需要给 MCP 服务端注入一个 `IdeaScorer`
   ——接口已经留好（`createMcpServer({ kb, scorer })`）。
-- embedding 来源已按 §9.3 裁定为**不上向量**（2026-09-18 实测否决，理由见该节引文）：
+- embedding 已按本节裁定**不上向量**（2026-09-18 实测否决：整条路已删除，理由见本节引文）：
   独立进程的 `idea_score` 因此与 dsh 会话里同处 `keyword_only` 模式，本层无需为向量做任何适配。
 
 ---

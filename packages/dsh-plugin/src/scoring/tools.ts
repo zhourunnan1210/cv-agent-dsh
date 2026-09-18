@@ -351,12 +351,6 @@ export function apply(ctx: Context): void {
           pack_ref: { type: 'string', required: true },
           pack_frozen: { type: 'boolean', required: true, description: '权重是否来自**已冻结**的 pack' },
           retrieval_mode: { type: 'string', required: true, description: '召回与证据相似度的口径（当前恒为 keyword_only）' },
-          rank_mode: {
-            type: 'string',
-            required: true,
-            description: '候选排序口径：semantic（embedding 余弦，模型在缓存里）/ lexical（字符 trigram 兜底）。'
-              + '只影响顺序，不影响判定与打分；两种模式的 rank_score 不可比。',
-          },
           escalation_reason: { type: 'string', description: 'status=needs_external_evidence 时说明为何要外扩' },
           panel_context: { type: 'string', description: '交给三专家面板的证据上下文（可直接作为委派 prompt）' },
           total: { type: 'integer' },
@@ -458,7 +452,6 @@ export function apply(ctx: Context): void {
           pack_ref: `${packInfo.pack_id}@${packInfo.version}`,
           pack_frozen: packInfo.frozen,
           retrieval_mode: packInfo.retrieval_mode,
-          rank_mode: collision.rank_mode,
           escalation_reason: derived.external_reason,
           panel_context: context,
         }
@@ -488,7 +481,6 @@ export function apply(ctx: Context): void {
         pack_ref: report.pack_ref,
         pack_frozen: report.pack_frozen,
         retrieval_mode: report.retrieval_mode,
-        rank_mode: collision.rank_mode,
         total: report.total,
         dimensions: { ...report.dimensions },
         suggestion: report.suggestion,

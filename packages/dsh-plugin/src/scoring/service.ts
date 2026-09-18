@@ -45,8 +45,7 @@ import {
 
 import type { KbService } from '../kb/service.js'
 import type { KbEntry } from '@cv-research/core'
-import { collide, lexicalRanker, semanticRanker, type CollideKbPort, type CollisionReport, type Ranker } from './collide.js'
-import { DEFAULT_EMBEDDING_MODEL, loadLocalEmbedder, probeModelCache, type CacheProbe } from './embedding.js'
+import { collide, type CollideKbPort, type CollisionReport } from './collide.js'
 import type { PanelResult } from './panel.js'
 
 /** 插件配置。 */
@@ -59,28 +58,6 @@ export interface Config {
   topk?: number
   /** 边界带：相似度落在此区间 → 建议外扩外部检索。缺省用 pack 的 keyword_only 配置。 */
   boundaryBand?: readonly [number, number]
-  /**
-   * embedding 缓存根目录（§4b）。
-   *
-   * 缺省 `data/models`。模型不在缓存里就自动退回字面排序——**不会**去联网下载。
-   */
-  embeddingCacheDir?: string
-  /** embedding 模型 ID。 */
-  embeddingModel?: string
-  /** embedding 精度：`q8`（112.8MB）或 `fp32`（448.5MB）。 */
-  embeddingDtype?: 'q8' | 'fp32'
-  /**
-   * 是否启用语义排序。**默认关闭；已裁定不启用**（用户 2026-09-18）。
-   *
-   * 为什么：实测（`scripts/calibrate-vector-thresholds.mjs`，modules 库 69 条）
-   * 语义排序在"共享论文"这个代理标注上**不如字面排序**——precision@1 24.6% vs 30.4%，
-   * recall@5 40.6% vs 63.8%。而且正负例余弦分布重叠（负例 max 0.732 > 正例 max 0.713），
-   * 阈值根本定不出来。没有证据支持它更好，就不该是默认值。
-   *
-   * 保留这个开关是为了保留**接入点**：换非对称检索模型或 cross-encoder 重排时从这里接。
-   * 详见 `docs/论文库与撞车打分整合设计-v1.0.md` §9.3。
-   */
-  embeddingEnabled?: boolean
 }
 
 export const Config = Schema.object({
@@ -91,19 +68,13 @@ export const Config = Schema.object({
 })
 
 /** 解析配置默认值（E19：不带 config 的行，默认值必须显式落定）。 */
-export function resolveIdeaScoreConfig(
-  config: Config | undefined,
-): Required<Omit<Config, 'boundaryBand' | 'embeddingEnabled'>> & { boundaryBand?: readonly [number, number]; embeddingEnabled?: boolean } {
+export function resolveIdeaScoreConfig(config: Config | undefined): Required<Omit<Config, 'boundaryBand'>> & { boundaryBand?: readonly [number, number] } {
   return {
     packDir: config?.packDir ?? 'data/packs',
     packId: config?.packId ?? 'deepfake-detection',
     version: config?.version ?? '0.1',
     topk: config?.topk ?? 10,
-    embeddingCacheDir: config?.embeddingCacheDir ?? 'data/models',
-    embeddingModel: config?.embeddingModel ?? DEFAULT_EMBEDDING_MODEL,
-    embeddingDtype: config?.embeddingDtype ?? 'q8',
     ...(config?.boundaryBand === undefined ? {} : { boundaryBand: config.boundaryBand }),
-    ...(config?.embeddingEnabled === undefined ? {} : { embeddingEnabled: config.embeddingEnabled }),
   }
 }
 
@@ -177,13 +148,11 @@ export class IdeaScoreService extends Service {
   /**
    * 当前使用的打分配置 + 冻结状态（工具层必须把它写进报告）。
    *
-   * `retrieval_mode` 与 `rank_mode` 是**两件事**，必须分开报：
-   * - `retrieval_mode` 说的是**召回与证据相似度**的口径。召回仍是 FTS5 关键词，
-   *   证据相似度仍是字符 trigram → 所以它仍是 `keyword_only`（§9.3）。
-   *   实测（`calibrate-vector-thresholds.mjs`）：向量余弦在真实库上两类分布重叠
-   *   （modules 负例 max 0.732 > 正例 max 0.713），现有向量口径 `[0.7, 0.9)` 与
-   *   near-dup `0.85` 几乎不触发——**翻成 vector 是错的**，不是保守。
-   * - `rank_mode` 说的是**候选排序**的口径：语义排序需显式开启（默认字面）。
+   * `retrieval_mode` 说的是**召回与证据相似度的口径**：召回走 FTS5 关键词，
+   * 证据相似度走字符 trigram → 所以是 `keyword_only`；候选排序同样是字符 trigram。
+   *
+   * 这里**没有** `rank_mode`：它当初是为了区分"字面/语义"两种排序而加的，
+   * 语义那条路已实测否决并删除（§9.1），只剩一种排序，再报一个恒定字段只是噪声。
    */
   async packInfo(): Promise<{
     pack_id: string
@@ -191,17 +160,14 @@ export class IdeaScoreService extends Service {
     frozen: boolean
     frozen_by: string | null
     retrieval_mode: 'keyword_only' | 'vector'
-    rank_mode: 'lexical' | 'semantic'
   }> {
     const pack = await this.loadPack()
-    const ranker = await this.ranker()
     return {
       pack_id: pack.pack_id,
       version: pack.version,
       frozen: pack.frozen,
       frozen_by: pack.frozen_by,
       retrieval_mode: 'keyword_only',
-      rank_mode: ranker.mode,
     }
   }
 
@@ -232,40 +198,13 @@ export class IdeaScoreService extends Service {
    * **确定性**，不调 LLM：只做检索与组装；`new / partial / known` 的判定由三位专家给。
    * 打分链路会**复用同一份报告**（证据卡不重新组装一遍）。
    *
-   * 排序用 embedding 余弦（§4b，模型在缓存里时）；模型缺席则退回字符 trigram。
-   * 报告里的 `rank_mode` 如实说明用的哪一种——两者产出的 `rank_score` 不可比。
+   * 排序用 core 的字符 trigram（`lexicalSimilarity`）。**语义排序已实测否决**
+   * （2026-09-18，见整合设计 §9.1）：本地 embedding 在真实库上正负例分布重叠、
+   * 阈值定不出来，且排序不如字面。相关代码与依赖已删除。
    */
   async collide(idea: IdeaCandidate): Promise<CollisionReport> {
     const kb = this.ctx.kb as unknown as CollideKbPort
-    return collide(idea, kb, await this.ranker())
-  }
-
-  /** 当前可用的排序端口（语义优先，字面兜底）。 */
-  async ranker(): Promise<Ranker> {
-    const backend = await this.embedding()
-    return backend === undefined ? lexicalRanker(lexicalSimilarity) : semanticRanker(backend)
-  }
-
-  /**
-   * 加载本地 embedding（§4b）；不可用或未启用时返回 `undefined`。
-   *
-   * 依赖 `optionalDependencies` 里的包与**已手工下载**的模型文件，两样都可能缺席，
-   * 所以这里没有异常路径——只在上层如实把 `rank_mode` 标成 `lexical`。
-   */
-  async embedding(): Promise<Awaited<ReturnType<typeof loadLocalEmbedder>>> {
-    const options = this.options
-    return loadLocalEmbedder({
-      cacheDir: options.embeddingCacheDir,
-      model: options.embeddingModel,
-      dtype: options.embeddingDtype,
-      // 默认关闭：实测语义排序不如字面排序（见 Config.embeddingEnabled 的说明）
-      ...(options.embeddingEnabled === true ? {} : { disabled: true }),
-    })
-  }
-
-  /** 诊断用：模型缓存到位没有、缺哪些文件（`scripts/check-embedding.mjs` 与排障共用）。 */
-  async embeddingCache(): Promise<CacheProbe> {
-    return probeModelCache(this.options.embeddingCacheDir, this.options.embeddingModel, this.options.embeddingDtype)
+    return collide(idea, kb, lexicalSimilarity)
   }
 
   /**

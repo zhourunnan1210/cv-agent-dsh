@@ -27,7 +27,6 @@ import type { IdeaCandidate, KbEntry, MethodModule } from '@cv-research/core'
 
 import type { KbService } from '../kb/service.js'
 import type { ModuleRecord } from '../kb/modules.js'
-import { cosine, type EmbeddingBackend } from './embedding.js'
 
 /** 每轴取多少条候选（问题簇 / 模块 / 做法）。 */
 const AXIS_TOPK = 10
@@ -90,13 +89,6 @@ export interface CollisionReport {
    * 判定（new / partial / known）由专家给——本层只把材料摆齐。
    */
   readonly alignment_tasks: readonly { idea_module: ModuleModuleView; candidates: readonly ModuleHit[] }[]
-  /**
-   * 排序用的是字面还是语义（§4b）。
-   *
-   * 必须如实报：语义排序会把"名字不同但机制相同"的候选排上来，字面排序做不到。
-   * 两种模式下 `rank_score` **不可比**——它只在本报告内部表示顺序。
-   */
-  readonly rank_mode: 'lexical' | 'semantic'
   readonly computed_at: string
 }
 
@@ -119,72 +111,31 @@ export interface CollideKbPort {
   getPaperProfile(paperId: string): ReturnType<KbService['getPaperProfile']>
 }
 
-/** 依赖注入的相似度（默认是 core 的字符 trigram；embedding 到位后换成余弦）。 */
+/**
+ * 依赖注入的相似度（§5.4：**只影响顺序**，不参与判定与打分）。
+ *
+ * 默认实现是 core 的 `lexicalSimilarity`（字符 trigram 的 Jaccard）。做成参数而不是
+ * 直接 import，是为了让 `collide()` 不把"怎么算像"这件事硬编码进去。
+ *
+ * **语义相似度这条路已实测否决**（2026-09-18，见整合设计 §9.3）：本地 embedding 在
+ * 真实库上正负例分布重叠（负例 max 0.732 > 正例 max 0.713），阈值定不出来，
+ * 排序也不如字面。相关代码与依赖已删除，不留"以后再说"的接口。
+ */
 export type RankSimilarity = (a: string, b: string) => number
-
-/**
- * 排序端口（§5.4：**只影响顺序**，不参与判定与打分）。
- *
- * 做成批量接口而不是 `(a, b) => number`，是因为语义排序要一次把所有候选送进模型：
- * 逐对调用会把同一段候选文本反复编码（模块轴最多 `topk × 模块数` 对），
- * 而一次批量前向的成本约等于一次单条前向。
- */
-export interface Ranker {
-  readonly mode: 'lexical' | 'semantic'
-  /** 与 `pairs` 等长、一一对应的分数（越大越像）。 */
-  rank(pairs: readonly RankPair[]): Promise<readonly number[]>
-}
-
-/** 一对排序输入：idea 侧的查询串、库侧的候选文本。 */
-export interface RankPair {
-  readonly query: string
-  readonly text: string
-}
-
-/** 字面排序（core 的字符 trigram）——embedding 不可用时的退路。 */
-export function lexicalRanker(similarity: (a: string, b: string) => number): Ranker {
-  return {
-    mode: 'lexical',
-    async rank(pairs) {
-      return pairs.map((pair) => similarity(pair.query, pair.text))
-    },
-  }
-}
-
-/**
- * 语义排序（embedding 余弦）——模块轴真正需要的那种"像"。
- *
- * 查询串与候选文本分开编码后取余弦：`0.663` 这种分数才是"换词但同义"能被捞上来的原因
- * （字面度量给 0.000）。
- */
-export function semanticRanker(backend: EmbeddingBackend): Ranker {
-  return {
-    mode: 'semantic',
-    async rank(pairs) {
-      if (pairs.length === 0) return []
-      // 一次批量编码：query 与 text 各成一批，避免逐对两次前向
-      const [queries, texts] = await Promise.all([
-        backend.embed(pairs.map((pair) => pair.query)),
-        backend.embed(pairs.map((pair) => pair.text)),
-      ])
-      return pairs.map((_, index) => cosine(queries[index] ?? [], texts[index] ?? []))
-    },
-  }
-}
 
 /**
  * 跑一次撞车分析（**确定性**，不调 LLM）。
  *
  * @param idea - 结构化 idea（模块化是前提——没有模块就只能退回"整体像不像"）。
  * @param kb - 知识库读接口。
- * @param ranker - 排序端口（只影响顺序，见 §5.4）。
+ * @param similarity - 排序用的相似度函数（只影响顺序，见 §5.4）。
  * @returns 撞车报告；`evidence_cards` 是给专家的材料，`alignment_tasks` 是对齐任务。
  */
-export async function collide(
+export function collide(
   idea: IdeaCandidate,
   kb: CollideKbPort,
-  ranker: Ranker,
-): Promise<CollisionReport> {
+  similarity: RankSimilarity,
+): CollisionReport {
   const rankOf = new Map<string, { problem?: number; module?: number; method?: number }>()
   const noteRank = (paperId: string, axis: 'problem' | 'module' | 'method', rank: number): void => {
     const current = rankOf.get(paperId) ?? {}
@@ -205,8 +156,6 @@ export async function collide(
   // ── 轴 2：模块（★ 对齐单元；idea 的每个模块各查一次）────────────────────
   const moduleHits: ModuleHit[] = []
   const alignmentTasks: { idea_module: ModuleModuleView; candidates: ModuleHit[] }[] = []
-  const moduleQueries: { view: ModuleModuleView; query: string; hits: ReturnType<CollideKbPort['searchModules']> }[] = []
-  const rankPairs: RankPair[] = []
 
   for (const module of idea.method_modules ?? []) {
     const view: ModuleModuleView = {
@@ -221,26 +170,17 @@ export async function collide(
     // 查询串用「名字 + 描述」：只用名字会漏掉"名字不同但做法相同"的（那正是要抓的）。
     const query = `${module.name} ${module.description}`.trim()
     const hits = kb.searchModules({ query, limit: AXIS_TOPK })
-    moduleQueries.push({ view, query, hits })
-    for (const record of hits) rankPairs.push({ query, text: `${record.name} ${record.statement}` })
-  }
-
-  // ★ 一次批量排序（语义模式下即一次前向），再按分数落回各模块的候选
-  const rankScores = await ranker.rank(rankPairs)
-  let rankCursor = 0
-  for (const { view, hits } of moduleQueries) {
     const candidates: ModuleHit[] = hits.map((record, index) => {
       const paperIds = kb.papersOfModule(record.module_id)
       for (const paperId of paperIds) noteRank(paperId, 'module', index + 1)
-      const rankScore = rankScores[rankCursor] ?? 0
-      rankCursor += 1
       return {
-        idea_module: view.name,
+        idea_module: module.name,
         module_id: record.module_id,
         module_name: record.name,
         statement: record.statement.slice(0, 200),
         paper_ids: paperIds,
-        rank_score: rankScore,
+        // 只用于排序（§5.4）：它表示"这条候选在模块轴上排第几"，不参与判定与打分
+        rank_score: similarity(query, `${record.name} ${record.statement}`),
       }
     })
     moduleHits.push(...candidates)
@@ -310,7 +250,6 @@ export async function collide(
     candidates: candidates.map((candidate) => candidate.paperId),
     evidence_cards: evidenceCards,
     alignment_tasks: alignmentTasks,
-    rank_mode: ranker.mode,
     computed_at: new Date().toISOString(),
   }
 }
