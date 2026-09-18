@@ -15,6 +15,7 @@
     "build": "pnpm -r --if-present build"
   },
   "devDependencies": {
+    "@huggingface/transformers": "^4.3.0",
     "vitest": "^4.1.8"
   }
 }

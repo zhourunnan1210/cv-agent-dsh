@@ -43,6 +43,7 @@ import {
 
 import type { KbService } from '../kb/service.js'
 import type { KbEntry } from '@cv-research/core'
+import { collide, type CollideKbPort, type CollisionReport } from './collide.js'
 
 /** 插件配置。 */
 export interface Config {
@@ -152,6 +153,17 @@ export class IdeaScoreService extends Service {
       // embedding 未接入前一律 keyword_only（§9.3 结论）——如实标记，不假装是向量检索
       retrieval_mode: 'keyword_only',
     }
+  }
+
+  /**
+   * 撞车分析（整合设计 v1.0 §5）：三轴召回 → 证据卡 → 模块级对齐任务。
+   *
+   * **确定性**，不调 LLM：只做检索与组装；`new / partial / known` 的判定由三位专家给。
+   * 打分链路会**复用同一份报告**（证据卡不重新组装一遍）。
+   */
+  async collide(idea: IdeaCandidate): Promise<CollisionReport> {
+    const kb = this.ctx.kb as unknown as CollideKbPort
+    return collide(idea, kb, lexicalSimilarity)
   }
 
   /**
