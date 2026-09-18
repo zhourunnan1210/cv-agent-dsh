@@ -141,15 +141,16 @@ const EXPECTED = [
  * 断言它们不在目录里，是为了让"设计稿里的名字"与"会话里的工具"这条界线
  * 在脚本里显式存在——接线跑在契约前面（或目录里混进没实现的工具）时这里会响。
  *
- * 注意 `exp*` 四个是**已撤销**（勘误 §12.4：实验段改为"归档原则 + coding agent
- * 自主"，不再做编排工具）。它们留在 `names.ts` 里是历史痕迹，这里显式点名。
+ * 现在为空：曾经住在这里的 `cvagent_exp_*` 四兄弟已按用户裁定**真删掉**了
+ * （勘误 §12.4：实验段不做编排工具）。删而不是留痕，是因为留着的名字会进
+ * `ALL_CVAGENT_TOOLS`，而那个数组的语义是"全部 cvagent 工具名"——里面混着
+ * 永远不会注册的名字，启动自检与目录体检就都得为它们写例外。
+ *
+ * 这个分区机制（声明 = 已接线 ∪ 未接线，且不重叠）**保留**：它是给"先定名字、
+ * 后接线"准备的合法通道。下次新增工具族只有两种做法——接线后进 EXPECTED，
+ * 或先进这里；忘了登记会在下面的分区检查里报错，而不是等到有人对着目录数数。
  */
-const DECLARED_NOT_WIRED = [
-  IDEA_TOOLS.expPlan,
-  IDEA_TOOLS.expLaunch,
-  IDEA_TOOLS.expStatus,
-  IDEA_TOOLS.expCollect,
-]
+const DECLARED_NOT_WIRED = []
 
 /**
  * 不变式：**声明名 = 已接线 ∪ 未接线**，且两者不重叠。
@@ -269,7 +270,9 @@ if (extraCvagent.length > 0) problems.push(`目录里多了未在期望面里的
 const leaked = DECLARED_NOT_WIRED.filter((n) => cvagent.includes(n))
 if (leaked.length > 0) problems.push(`已声明但未接线的工具出现在目录里：${leaked.join('、')}`)
 
-console.log(`  未接线（names.ts 有名字、无行注册）：${DECLARED_NOT_WIRED.length} 个 \u2192 ${DECLARED_NOT_WIRED.join('、')}`)
+console.log(DECLARED_NOT_WIRED.length === 0
+  ? '  未接线：0 个（声明名 = 会话里的工具，没有悬空契约）'
+  : `  未接线（names.ts 有名字、无行注册）：${DECLARED_NOT_WIRED.length} 个 \u2192 ${DECLARED_NOT_WIRED.join('、')}`)
 
 if (withAsta) {
   const expectedAsta = Object.values(ASTA_TOOL_NAMES).sort()
@@ -300,5 +303,9 @@ assert.equal(
   expectedCvagent.length,
   `cvagent 工具数应为已接线契约的 ${expectedCvagent.length} 个，实际 ${cvagent.length}`,
 )
-console.log(`\nTOOL CATALOG OK —— cvagent ${cvagent.length} 个（另有 ${DECLARED_NOT_WIRED.length} 个已声明未接线）+ Asta 8 个与契约一致`)
+console.log(
+  `\nTOOL CATALOG OK —— cvagent ${cvagent.length} 个`
+  + (DECLARED_NOT_WIRED.length === 0 ? '（无悬空契约）' : `（另有 ${DECLARED_NOT_WIRED.length} 个已声明未接线）`)
+  + ' + Asta 8 个与契约一致',
+)
 process.exit(0)

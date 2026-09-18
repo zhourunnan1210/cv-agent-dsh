@@ -70,12 +70,15 @@ export interface Config {
   /** embedding 精度：`q8`（112.8MB）或 `fp32`（448.5MB）。 */
   embeddingDtype?: 'q8' | 'fp32'
   /**
-   * 是否启用语义排序。**默认关闭**。
+   * 是否启用语义排序。**默认关闭；已裁定不启用**（用户 2026-09-18）。
    *
-   * 为什么默认关：实测（`scripts/calibrate-vector-thresholds.mjs`，modules 库 69 条）
+   * 为什么：实测（`scripts/calibrate-vector-thresholds.mjs`，modules 库 69 条）
    * 语义排序在"共享论文"这个代理标注上**不如字面排序**——precision@1 24.6% vs 30.4%，
-   * recall@5 40.6% vs 63.8%。没有证据支持它更好，就不该是默认值（113MB + 每次编码的代价
-   * 也不该默认付）。开着它需要先拿出"名字不同但机制相同"的人工标注集来证明。
+   * recall@5 40.6% vs 63.8%。而且正负例余弦分布重叠（负例 max 0.732 > 正例 max 0.713），
+   * 阈值根本定不出来。没有证据支持它更好，就不该是默认值。
+   *
+   * 保留这个开关是为了保留**接入点**：换非对称检索模型或 cross-encoder 重排时从这里接。
+   * 详见 `docs/论文库与撞车打分整合设计-v1.0.md` §9.3。
    */
   embeddingEnabled?: boolean
 }

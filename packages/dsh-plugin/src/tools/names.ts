@@ -84,14 +84,21 @@ export const DOMAIN_TOOLS = {
   bind: 'cvagent_domain_bind',
 } as const
 
-/** Idea 与实验族（对应 v1.2 §15.4）。 */
+/**
+ * Idea 族（对应 v1.2 §15.4）。
+ *
+ * **实验编排四工具已撤销**（勘误 §12.4，用户裁定）：实验段改为「文件归档原则 + 把执行
+ * 交给 dsh（它本身就是 coding harness agent）」，不再做 `exp_plan` / `exp_launch` /
+ * `exp_status` / `exp_collect`。
+ *
+ * 名字是**真的删掉**而不是留在这里当痕迹：留着的名字会进 `ALL_CVAGENT_TOOLS`，
+ * 而那个数组的语义是"全部 cvagent 工具名"——里面混着四个永远不会注册的名字，
+ * 启动自检与目录体检就都得为它们写例外。撤销的名字不该继续是一份"声明"。
+ * 授权门（§4.6）不受影响：GPU 实例 / 计费 API / 破坏性操作仍须委派前取得授权。
+ */
 export const IDEA_TOOLS = {
   generate: 'cvagent_idea_generate',
   score: 'cvagent_idea_score',
-  expPlan: 'cvagent_exp_plan',
-  expLaunch: 'cvagent_exp_launch',
-  expStatus: 'cvagent_exp_status',
-  expCollect: 'cvagent_exp_collect',
   writeDraft: 'cvagent_write_draft',
 } as const
 
