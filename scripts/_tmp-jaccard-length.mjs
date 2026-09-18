@@ -2,7 +2,8 @@
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
 
-const DSH = 'C:/Users/Admin/AppData/Roaming/npm/node_modules/@deepseek-ai/dsh/node_modules/'
+import { resolveDshModules } from './lib/dsh-root.mjs'
+const DSH = resolveDshModules()
 const require = createRequire(DSH + 'package.json')
 const core = await import(pathToFileURL('packages/core/lib/index.js').href)
 const { KbService } = await import(pathToFileURL('packages/dsh-plugin/lib/kb/service.js').href)

@@ -31,7 +31,7 @@
 
 1. `NO_PROXY` 里含 `[::1]` 时，PowerShell 会把方括号吃掉，传给 httpx 变成
    `Invalid port: ':1]'` → 调用前清空代理相关变量。
-2. 会话临时区（`C:\\Users\\Admin\\AppData\\Local\\Temp\\dsh-*`）同样受沙箱限制，
+2. 会话临时区（`<系统临时区>/dsh-*`）同样受沙箱限制，
    所以 temp 基准目录要显式指向工作区内。
 """
 from __future__ import annotations

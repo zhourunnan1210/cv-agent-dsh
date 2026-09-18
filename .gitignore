@@ -43,3 +43,8 @@ __pycache__/
 .idea/
 .DS_Store
 Thumbs.db
+
+# 写作范例的**论文 PDF 本体**（约 280MB）不入库：它们只是素材，不是 skill 的内容。
+# 同目录下的 .md 是提炼出来的写作范例卡（skill 真正使用的部分），保留。
+# 需要的 PDF 自行下载放回原位即可。
+.dsh/skills/ccf-paper-writer/**/*.pdf
