@@ -24,12 +24,7 @@
 >
 > **仍然存在的边界**：本仓库整体以 MIT 授权（`LICENSE`），而 MIT 允许下游商业
 > 使用——两者不能混同。**不得把 `.dsh/skills/academic-*/` 与 `.dsh/skills/shared/`
-> 的内容按 MIT 条款对外分发**。
->
-> ✅ **2026-09-18 已执行（开源准备）**：`.dsh/skills/academic-*/`、`.dsh/skills/deep-research/`
-> 与 `.dsh/skills/shared/` 已**从版本控制移除**（脚本本体留在磁盘上，已在 `.gitignore` 排除）。
-> 现在仓库里不再包含任何 CC BY-NC 内容，MIT 授权覆盖全部已发布文件。
-> 需要这四个编排型 skill 的使用者请自行从上游若日后开源发布或商业化，必须先行移除这两部分。
+> 的内容按 MIT 条款对外分发**。若日后开源发布或商业化，必须先行移除这两部分。
 > CCFA-Skills（MIT）与 nature-skills（Apache-2.0）无此限制。
 
 ## 运行时依赖（未复制源码，由包管理器安装）
