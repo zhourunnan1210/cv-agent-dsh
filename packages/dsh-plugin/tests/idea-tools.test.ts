@@ -70,7 +70,7 @@ async function makeEnv(options = {}) {
     apply(coreCtx) {
       runtime = new tools.ToolRuntime(coreCtx, tools.Config ? tools.Config({}) : {})
       kb = new KbService(coreCtx, { dbPath: join(dir, 'metadata.db') })
-      service = new IdeaScoreService(coreCtx, { packDir, packId: 'test-pack', version: '0.1', topk: 5 })
+      service = new IdeaScoreService(coreCtx, { packDir, packId: 'test-pack', version: '0.1', topk: 5, embeddingCacheDir: join(dir, 'no-models') })
     },
   })
 

@@ -60,7 +60,7 @@ async function makeEnv(options = {}) {
     name: 'core',
     apply(ctx) {
       kb = new KbService(ctx, { dbPath: join(dir, 'metadata.db') })
-      service = new IdeaScoreService(ctx, { packDir, packId: 'test-pack', version: '0.1', topk: 5 })
+      service = new IdeaScoreService(ctx, { packDir, packId: 'test-pack', version: '0.1', topk: 5, embeddingCacheDir: join(dir, 'no-models') })
     },
   })
 
@@ -118,7 +118,7 @@ describe('ideaScore 服务', () => {
       name: 'core',
       apply(ctx) {
         kb = new KbService(ctx, { dbPath: join(dir, 'metadata.db') })
-        service = new IdeaScoreService(ctx, { packDir: join(dir, 'missing'), packId: 'nope', version: '9.9' })
+        service = new IdeaScoreService(ctx, { packDir: join(dir, 'missing'), packId: 'nope', version: '9.9', embeddingCacheDir: join(dir, 'no-models') })
       },
     })
     await expect(service.packInfo()).rejects.toThrow(/找不到 Domain Pack/)

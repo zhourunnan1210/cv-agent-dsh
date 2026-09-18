@@ -21,7 +21,7 @@ import { pathToFileURL } from 'node:url'
 import { lexicalSimilarity } from '@cv-research/core'
 
 import { KbService } from '../lib/kb/service.js'
-import { collide, renderCollisionContext } from '../lib/scoring/collide.js'
+import { collide, lexicalRanker, renderCollisionContext, semanticRanker, type Ranker } from '../lib/scoring/collide.js'
 
 const DSH = 'C:/Users/Admin/AppData/Roaming/npm/node_modules/@deepseek-ai/dsh/node_modules/'
 const require = createRequire(DSH + '@deepseek-ai/dsh-system-prompt/package.json')
@@ -31,6 +31,26 @@ const cordis = await import(
 )
 
 const NOW = '2026-09-17T00:00:00Z'
+
+/**
+ * 假语义后端：按文本里的语义线索给向量。
+ *
+ * 用假后端而不是真模型，是为了让"排序接线对不对"这件事**不依赖 113MB 模型文件**——
+ * 真模型的语义区分度由 `embedding.test.ts` 里那条带 skip 的用例负责（§9.1 判据）。
+ *
+ * 这里的规则刻意粗糙（文本里有"频"→ 第一个分量）：它模拟的正是真模型能做到、
+ * 而字符 trigram 做不到的事——"频域"与"频率域"只共用一个字，字面分很低，语义上却是一回事。
+ */
+function fakeBackend(table: Record<string, number[]> = {}) {
+  return {
+    model: 'fake',
+    dtype: 'q8' as const,
+    dimensions: 2,
+    async embed(texts: readonly string[]) {
+      return texts.map((text) => table[text] ?? (text.includes('频') ? [1, 0] : [0, 1]))
+    },
+  }
+}
 
 /** 造一篇"已提取 + 有条目 + 有模块"的论文。 */
 function seedPaper(kb, id, options = {}) {
@@ -92,7 +112,7 @@ describe('撞车链路（三轴召回 + 证据卡 + 模块级对齐）', () => {
     await rm(dir, { recursive: true, force: true })
   })
 
-  it('三轴并发召回：问题簇 / 模块 / 做法都进候选，并记录各自排名', () => {
+  it('三轴并发召回：问题簇 / 模块 / 做法都进候选，并记录各自排名', async () => {
     seedPaper(kb, '10.1/a')
     kb.upsertEntry('problems', '跨数据集泛化不足', ['10.1/a'], {})
     kb.upsertEntry('methods', '频域一致性约束 + 稀疏回放缓冲', ['10.1/a'], {})
@@ -100,7 +120,7 @@ describe('撞车链路（三轴召回 + 证据卡 + 模块级对齐）', () => {
     kb.upsertModule({ name: '频域一致性约束', statement: '约束频谱响应一致性', kinds: ['loss'], paper_id: '10.1/a' })
     kb.upsertModule({ name: '稀疏回放缓冲', statement: '稀疏回放特征', kinds: ['training_strategy'], paper_id: '10.1/a' })
 
-    const report = collide(IDEA, kb, lexicalSimilarity)
+    const report = await collide(IDEA, kb, lexicalRanker(lexicalSimilarity))
     expect(report.idea_id).toBe('idea-1')
     expect(report.axes.problem_clusters.length).toBeGreaterThan(0)
     expect(report.axes.module_hits.length, 'idea 的两个模块都应产生候选召回记录').toBeGreaterThanOrEqual(1)
@@ -112,24 +132,24 @@ describe('撞车链路（三轴召回 + 证据卡 + 模块级对齐）', () => {
     expect(Object.keys(card.axis_ranks).length).toBeGreaterThanOrEqual(2)
   })
 
-  it('证据卡**不截断**：方法段与局限都完整（旧实现截 160 字，专家只能看到半句话）', () => {
+  it('证据卡**不截断**：方法段与局限都完整（旧实现截 160 字，专家只能看到半句话）', async () => {
     const longMethod = `方法整体叙述。${'细节。'.repeat(80)}结论在此。`   // 远超 160 字
     const longLimitation = `仅在 FF++ 上验证。${'补充说明。'.repeat(20)}未覆盖跨生成器设定。`
     seedPaper(kb, '10.1/a', { method: longMethod, limitations: [longLimitation] })
     kb.upsertEntry('problems', '跨数据集泛化不足', ['10.1/a'], {})
 
-    const report = collide(IDEA, kb, lexicalSimilarity)
+    const report = await collide(IDEA, kb, lexicalRanker(lexicalSimilarity))
     const card = report.evidence_cards.find((item) => item.paper_id === '10.1/a')
     expect(card.extraction.method_summary).toBe(longMethod)
     expect(card.extraction.limitations[0]).toBe(longLimitation)
     expect(card.extraction.method_summary.endsWith('结论在此。'), '截断会丢掉结论').toBe(true)
   })
 
-  it('模块轴：给出 idea 每个模块的候选，且**不替专家下判定**', () => {
+  it('模块轴：给出 idea 每个模块的候选，且**不替专家下判定**', async () => {
     seedPaper(kb, '10.1/a')
     kb.upsertModule({ name: '频域一致性约束', statement: '约束频谱响应一致性', kinds: ['loss'], paper_id: '10.1/a' })
 
-    const report = collide(IDEA, kb, lexicalSimilarity)
+    const report = await collide(IDEA, kb, lexicalRanker(lexicalSimilarity))
     expect(report.alignment_tasks, '每个 idea 模块一个对齐任务').toHaveLength(2)
     const first = report.alignment_tasks[0]
     expect(first.idea_module.name).toBe('频域一致性约束')
@@ -138,15 +158,62 @@ describe('撞车链路（三轴召回 + 证据卡 + 模块级对齐）', () => {
     expect(JSON.stringify(report)).not.toContain('"status"')
   })
 
-  it('模块轴召回为空时也照样产出任务（"真新"与"措辞不同"要靠专家结合论文证据判断）', () => {
+  it('模块轴召回为空时也照样产出任务（"真新"与"措辞不同"要靠专家结合论文证据判断）', async () => {
     seedPaper(kb, '10.1/a')
-    const report = collide(IDEA, kb, lexicalSimilarity)
+    const report = await collide(IDEA, kb, lexicalRanker(lexicalSimilarity))
     const task = report.alignment_tasks.find((item) => item.idea_module.name === '原型对齐模块')
     expect(task, '即使库里没有对应模块，任务也要在').toBeDefined()
     expect(task.candidates).toEqual([])
   })
 
-  it('候选排序按"被几轴命中 + 各轴排名"，不按相似度（相似度已证明不可信）', () => {
+  it('rank_mode 如实反映用的哪种排序（字面 / 语义）', async () => {
+    seedPaper(kb, '10.1/a')
+    const lexical = await collide(IDEA, kb, lexicalRanker(lexicalSimilarity))
+    expect(lexical.rank_mode).toBe('lexical')
+    const semantic = await collide(IDEA, kb, semanticRanker(fakeBackend({})))
+    expect(semantic.rank_mode).toBe('semantic')
+    // 两种模式的候选集合相同（排序不该改变召回），但分数来源不同
+    expect(semantic.alignment_tasks.map((task) => task.idea_module.name))
+      .toEqual(lexical.alignment_tasks.map((task) => task.idea_module.name))
+  })
+
+  it('语义排序会把"名字不同但机制相同"的候选排到字面排序排不到的位置', async () => {
+    seedPaper(kb, '10.1/a')
+    // 库里这条模块与 idea 的模块**语义相同、用词不同**："频域一致性约束" vs "频率域一致性正则"。
+    // 字面只共用"频"与"一致性"，trigram 给不出什么分——这正是要抓的那种撞车形态。
+    kb.upsertModule({ name: '频率域一致性正则', statement: '用频率域的一致性约束减少增量遗忘', kinds: ['loss'], paper_id: '10.1/a' })
+
+    const identical = await collide(IDEA, kb, lexicalRanker(lexicalSimilarity))
+    const semantic = await collide(IDEA, kb, semanticRanker(fakeBackend()))
+
+    const lexicalHit = identical.axes.module_hits.find((hit) => hit.module_name === '频率域一致性正则')
+    const semanticHit = semantic.axes.module_hits.find((hit) => hit.module_name === '频率域一致性正则')
+    expect(lexicalHit).toBeDefined()
+    expect(semanticHit, '语义后端认出这两条是一回事').toBeDefined()
+    expect(semanticHit.rank_score, '语义分必须高于字面分').toBeGreaterThan(lexicalHit.rank_score)
+    // 排序只影响 rank_score，不该改变"有哪些候选"（召回由检索决定）
+    expect(semantic.axes.module_hits.map((hit) => hit.module_id).sort())
+      .toEqual(identical.axes.module_hits.map((hit) => hit.module_id).sort())
+  })
+
+  it('批量排序：一次调用覆盖所有候选（语义模式下等于一次前向，而不是逐对调用）', async () => {
+    seedPaper(kb, '10.1/a')
+    kb.upsertModule({ name: '频域一致性约束', statement: 'A', kinds: ['loss'], paper_id: '10.1/a' })
+    kb.upsertModule({ name: '频域一致性损失', statement: 'B', kinds: ['loss'], paper_id: '10.1/a' })
+    const batches: number[] = []
+    const counting: Ranker = {
+      mode: 'semantic',
+      async rank(pairs) {
+        batches.push(pairs.length)
+        return pairs.map(() => 0.5)
+      },
+    }
+    const report = await collide(IDEA, kb, counting)
+    expect(batches, '只调一次').toHaveLength(1)
+    expect(batches[0]).toBe(report.axes.module_hits.length)
+  })
+
+  it('候选排序按"被几轴命中 + 各轴排名"，不按相似度（相似度已证明不可信）', async () => {
     seedPaper(kb, '10.1/a')
     seedPaper(kb, '10.1/b', {
       problem: '实时性与算力开销', method: '轻量化主干替换',
@@ -155,17 +222,17 @@ describe('撞车链路（三轴召回 + 证据卡 + 模块级对齐）', () => {
     kb.upsertEntry('problems', '跨数据集泛化不足', ['10.1/a', '10.1/b'], {})
     kb.upsertEntry('methods', '频域一致性约束 + 稀疏回放缓冲', ['10.1/a'], {})
 
-    const report = collide(IDEA, kb, lexicalSimilarity)
+    const report = await collide(IDEA, kb, lexicalRanker(lexicalSimilarity))
     // a 同时被问题轴与做法轴命中，应排在 b（只被问题轴命中）之前
     expect(report.candidates[0]).toBe('10.1/a')
   })
 
-  it('专家上下文里**不出现任何相似度数字**（旧实现给裁判看 sim=0.012，等于用噪声锚定）', () => {
+  it('专家上下文里**不出现任何相似度数字**（旧实现给裁判看 sim=0.012，等于用噪声锚定）', async () => {
     seedPaper(kb, '10.1/a')
     kb.upsertEntry('problems', '跨数据集泛化不足', ['10.1/a'], {})
     kb.upsertModule({ name: '频域一致性约束', statement: '约束频谱响应一致性', kinds: ['loss'], paper_id: '10.1/a' })
 
-    const report = collide(IDEA, kb, lexicalSimilarity)
+    const report = await collide(IDEA, kb, lexicalRanker(lexicalSimilarity))
     const context = renderCollisionContext(report, IDEA)
 
     expect(context).not.toMatch(/sim\s*=/)
@@ -178,32 +245,32 @@ describe('撞车链路（三轴召回 + 证据卡 + 模块级对齐）', () => {
     expect(context).toContain('Paper 10.1/a')
   })
 
-  it('未提取的候选论文：证据卡照样给出，并**明确标注**尚未提取', () => {
+  it('未提取的候选论文：证据卡照样给出，并**明确标注**尚未提取', async () => {
     kb.upsertPaper({
       paper_id: '10.1/c', title: 'Paper C', authors: [], source_channel: 'asta',
       pdf_status: 'pending', created_at: NOW, updated_at: NOW,
     })
     kb.upsertEntry('problems', '跨数据集泛化不足', ['10.1/c'], {})
 
-    const report = collide(IDEA, kb, lexicalSimilarity)
+    const report = await collide(IDEA, kb, lexicalRanker(lexicalSimilarity))
     const card = report.evidence_cards.find((item) => item.paper_id === '10.1/c')
     expect(card.extraction).toBeUndefined()
     expect(renderCollisionContext(report, IDEA)).toContain('尚未提取')
   })
 
-  it('没有任何候选时不崩：空轴、空卡片、空对齐任务', () => {
-    const report = collide(IDEA, kb, lexicalSimilarity)
+  it('没有任何候选时不崩：空轴、空卡片、空对齐任务', async () => {
+    const report = await collide(IDEA, kb, lexicalRanker(lexicalSimilarity))
     expect(report.candidates).toEqual([])
     expect(report.evidence_cards).toEqual([])
     expect(report.alignment_tasks).toHaveLength(2)
     expect(renderCollisionContext(report, IDEA)).toContain('idea 的方法模块 2 个')
   })
 
-  it('idea 没有模块时仍能跑（退回问题轴与做法轴）', () => {
+  it('idea 没有模块时仍能跑（退回问题轴与做法轴）', async () => {
     seedPaper(kb, '10.1/a')
     kb.upsertEntry('problems', '跨数据集泛化不足', ['10.1/a'], {})
     const noModules = { ...IDEA, method_modules: [] }
-    const report = collide(noModules, kb, lexicalSimilarity)
+    const report = await collide(noModules, kb, lexicalRanker(lexicalSimilarity))
     expect(report.alignment_tasks).toEqual([])
     expect(report.candidates).toContain('10.1/a')
   })

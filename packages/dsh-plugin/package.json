@@ -101,6 +101,9 @@
     "@cv-research/core": "workspace:*",
     "fflate": "^0.8.3"
   },
+  "optionalDependencies": {
+    "@huggingface/transformers": "^4.3.0"
+  },
   "peerDependencies": {
     "@deepseek-ai/cordis": ">=4.0.1",
     "@deepseek-ai/dsh-credentials": ">=0.1.0-rc.6",
