@@ -25,8 +25,9 @@ import { IDEA_TOOLS } from '../tools/names.js'
 import type { IdeaScoreService } from './service.js'
 import { SUBAGENT_MAX_DEPTH } from '../subagent.js'
 import type { SubagentLike } from '../subagent.js'
-import { renderCollisionContext } from './collide.js'
+import { renderCollisionContext, type CollisionReport } from './collide.js'
 import { runExpertPanel } from './panel.js'
+import { screenCandidates } from './screen.js'
 
 export const name = 'cvagent-idea-tools'
 export const inject = ['ideaScore', 'kb', 'tools']
@@ -391,6 +392,17 @@ export function apply(ctx: Context): void {
             items: { type: 'string' },
             description: '面板自洽性问题：判定与分数矛盾（conflicts）、给了分却没引用（unsupported）、未收敛的分歧',
           },
+          recall_mode: {
+            type: 'string',
+            required: true,
+            description: '候选论文怎么找出来的：llm_screen（子代理读了全库后挑的）/ keyword（关键词兜底）。'
+              + 'keyword 模式下"没找到撞车"的可信度更低——关键词会漏掉换词的情况。',
+          },
+          recall_notes: {
+            type: 'array',
+            items: { type: 'string' },
+            description: '粗筛的问题：模型报了库里没有的编号、某些模块一条候选都没给、或粗筛失败退回了关键词',
+          },
           escalated_external: { type: 'boolean', description: '本次是否用了外扩（Asta）证据；仅 status=scored 时有意义' },
           report_consistent: { type: 'boolean', description: '报告自洽性（总分可由权重快照复算）' },
           failure_blocked_by: { type: 'array', items: { type: 'string' }, description: '失败库中"条件仍成立"的条目 ID' },
@@ -439,23 +451,39 @@ export function apply(ctx: Context): void {
             ],
           }
       const derived = await ideaScore.derive(idea, evidence)
-      // 撞车报告只组装一次：证据卡与对齐任务既进 panel_context，也进最终报告。
-      // 外扩证据一并渲染进上下文——否则"去跑 Asta"这件事对专家不可见，外扩等于白做。
-      const collision = await ideaScore.collide(idea)
-      const context = renderCollisionContext(collision, idea, external)
 
-      // 边界带命中且尚无外扩证据 → 交回主 Agent 去跑 Asta（工具不能自己调别的工具）
+      // 边界带命中且尚无外扩证据 → 交回主 Agent 去跑 Asta（工具不能自己调别的工具）。
+      // **放在粗筛之前**：这一步注定要重跑，先派一个粗筛子代理就是白花钱。
+      // 这里给的 `panel_context` 用关键词预览（不派子代理），并如实标 recall_mode。
       if (derived.needs_external && external.length === 0) {
+        const preview = await ideaScore.collide(idea)
         return {
           status: 'needs_external_evidence',
           idea_id: idea.idea_id,
           pack_ref: `${packInfo.pack_id}@${packInfo.version}`,
           pack_frozen: packInfo.frozen,
           retrieval_mode: packInfo.retrieval_mode,
+          recall_mode: preview.recall_mode,
+          recall_notes: ['这是外扩前的关键词预览，粗筛尚未运行——正式打分时会走子代理读全库'],
           escalation_reason: derived.external_reason,
-          panel_context: context,
+          panel_context: renderCollisionContext(preview, idea),
         }
       }
+
+      // ── 粗筛：让一个子代理读「问题库 + 模块清单」全文，挑出相关条目 ──────────
+      // 这是用户 2026-09-18 定的方向：库小到能整读（8493 字），就不该用关键词去猜——
+      // 关键词会把"用词不同但意思相同"的论文主动扔掉，而那正是最该抓的撞车。
+      // 粗筛失败**不能拖垮整条链路**：退回关键词召回，并把 recall_mode 如实标出来。
+      const screening = await screenCandidates(subagents, {
+        ideaId: idea.idea_id,
+        idea,
+        kb: await ideaScore.screenKb(),
+        agent: exec.agent,
+        signal: exec.signal,
+      })
+      const screenFailed = 'error' in screening
+      const collision = await ideaScore.collide(idea, screenFailed ? undefined : screening)
+      const context = renderCollisionContext(collision, idea, external)
 
       const panel = await runExpertPanel(subagents, {
         ideaId: idea.idea_id,
@@ -499,6 +527,8 @@ export function apply(ctx: Context): void {
           rationale: verdict.rationale,
         })),
         panel_notes: panelNotes(report.panel),
+        recall_mode: collision.recall_mode,
+        recall_notes: recallNotes(collision, screenFailed ? screening.error : undefined),
         escalated_external: report.escalated_external ?? false,
         report_consistent: consistency.consistent,
         failure_blocked_by: [...(report.failure_review?.blocked_by ?? [])],
@@ -506,6 +536,28 @@ export function apply(ctx: Context): void {
       }
     },
   }))
+}
+
+/**
+ * 粗筛的问题清单（工具层直接汇报）。
+ *
+ * 三类都要报给主 Agent，不能悄悄留在报告里：
+ * - **模型编了编号**：它报了库里没有的条目——这是"模型在编"的直接证据；
+ * - **某个模块一条候选都没给**：可能是真新，也可能是它没看懂，要人分辨；
+ * - **粗筛失败退回关键词**：结论强度随之下降，必须说。
+ */
+export function recallNotes(report: CollisionReport, screenError: string | undefined): string[] {
+  const notes: string[] = []
+  if (screenError !== undefined) {
+    notes.push(`粗筛未成功（${screenError}），已退回关键词召回——换词同义的撞车可能被漏掉`)
+  }
+  for (const dropped of report.screened_dropped) {
+    notes.push(`粗筛报了库里不存在的编号：${dropped.kind === 'problem' ? '问题' : '模块'} ${dropped.id}（已丢弃）`)
+  }
+  for (const module of report.unmatched_idea_modules) {
+    notes.push(`粗筛对模块「${module}」一条候选都没给——可能是真新，也可能是措辞差异导致它没认出来`)
+  }
+  return notes
 }
 
 function options(subDomain: unknown): string {

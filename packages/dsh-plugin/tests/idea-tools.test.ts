@@ -49,7 +49,17 @@ const PACK = {
 
 const ROOT_AGENT = { id: 'session-root' }
 
-/** @param options.replies 每次委派的返回（按调用顺序），`undefined` 表示 structured 缺失 */
+/** 只取专家委派（`expert:*`），把粗筛那次 `screen:*` 排除掉。 */
+function expertCalls(env) {
+  return env.startCalls.filter((call) => String(call.request.label ?? '').startsWith('expert:'))
+}
+
+/** 只取粗筛委派（`screen:*`）。 */
+function screenCalls(env) {
+  return env.startCalls.filter((call) => String(call.request.label ?? '').startsWith('screen:'))
+}
+
+/** @param options.replies 专家委派的返回（按调用顺序）；@param options.screenReply 粗筛的返回 */
 async function makeEnv(options = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'cvagent-ideatools-'))
   const packDir = join(dir, 'packs')
@@ -70,17 +80,47 @@ async function makeEnv(options = {}) {
     apply(coreCtx) {
       runtime = new tools.ToolRuntime(coreCtx, tools.Config ? tools.Config({}) : {})
       kb = new KbService(coreCtx, { dbPath: join(dir, 'metadata.db') })
-      service = new IdeaScoreService(coreCtx, { packDir, packId: 'test-pack', version: '0.1', topk: 5, embeddingCacheDir: join(dir, 'no-models') })
+      service = new IdeaScoreService(coreCtx, { packDir, packId: 'test-pack', version: '0.1', topk: 5 })
     },
   })
 
+  // ⚠️ 必须先建论文，条目才挂得上去：`entry_sources` 的反向索引指向 `papers` 表，
+  // 论文不存在 → `papersOfEntry` 查出来是空 → **证据卡 0 篇**，专家在空证据上判分。
+  // 这个夹具缺了这一层，是 2026-09-18 加粗筛测试时才暴露的（此前那些测试一直都在空证据上跑）。
+  const now = new Date().toISOString()
+  for (const id of ['10.1/a', '10.1/b', '10.1/c', '10.1/d']) {
+    kb.upsertPaper({
+      paper_id: id, title: `Paper ${id}`, authors: [], source_channel: 'asta',
+      pdf_status: 'downloaded', md_path: `markdown/${id}/full.md`, parse_channel: 'mineru',
+      created_at: now, updated_at: now, year: 2025,
+    })
+  }
+
   kb.upsertEntry('problems', '跨数据集泛化不足：未见生成方法下性能下降', ['10.1/a'], {})
   kb.upsertEntry('methods', 'CLIP 参数高效微调检测器', ['10.1/b'], {})
+  kb.upsertEntry('innovations', '跨数据评测协议：训练于单一数据集、多数据集测试', ['10.1/c'], {})
   kb.upsertEntry('failures', '跨数据集泛化上只做频域分支替换不换主干：AUC 不升反降', ['10.1/d'], {})
 
+  /**
+   * 假 subagents：**按 label 路由**，不按调用次序。
+   *
+   * 粗筛（`screen:*`）与专家（`expert:*`）是两件事。共用一个次序队列的话，
+   * 以后任何一步增减委派都会把一堆测试连带改掉，而且改错方向看不出来。
+   * `screenReply` 单独给；`replies` 只管专家那一串。
+   */
   const fakeSubagents = {
     start(name, request) {
       startCalls.push({ name, request })
+      const label = String(request.label ?? '')
+      if (label.startsWith('screen:')) {
+        return {
+          result: Promise.resolve(options.screenReply ?? {
+            structured: { matched_problems: [], matched_modules: [] },
+            stopReason: 'completed',
+          }),
+          dispose: async () => {},
+        }
+      }
       const reply = (options.replies ?? [])[call]
       call += 1
       return {
@@ -243,9 +283,9 @@ describe('Idea 族工具（真实 ToolRuntime + 假 subagents）', () => {
 
     // 面板委派契约：三位专家、各自 persona、只给 read（不让专家自行扩大证据集合）、
     // outputSchema 为模块级对齐 + 四维分
-    expect(env.startCalls).toHaveLength(3)
-    expect(env.startCalls.map((call) => call.request.label)).toEqual(['expert:method', 'expert:evaluation', 'expert:domain'])
-    for (const call of env.startCalls) {
+    expect(expertCalls(env)).toHaveLength(3)
+    expect(expertCalls(env).map((call) => call.request.label)).toEqual(['expert:method', 'expert:evaluation', 'expert:domain'])
+    for (const call of expertCalls(env)) {
       expect(call.name).toBe('spawn')
       expect(call.request.parent).toBe(ROOT_AGENT)
       expect(call.request.toolFilter).toEqual({ allow: ['read'] })
@@ -254,9 +294,9 @@ describe('Idea 族工具（真实 ToolRuntime + 假 subagents）', () => {
       // 无分歧（三位给相同的分）→ 不该触发讨论轮
       expect(String(call.request.prompt[0].text)).not.toContain('[需要你们讨论的分歧点]')
     }
-    expect(env.startCalls[0].request.persona).toContain('方法/架构专家')
-    expect(env.startCalls[1].request.persona).toContain('实验/评测专家')
-    expect(env.startCalls[2].request.persona).toContain('领域/问题专家')
+    expect(expertCalls(env)[0].request.persona).toContain('方法/架构专家')
+    expect(expertCalls(env)[1].request.persona).toContain('实验/评测专家')
+    expect(expertCalls(env)[2].request.persona).toContain('领域/问题专家')
 
     // 报告必须能回答"分数从哪来"：三位专家各自的分数都在
     expect(result.value.experts).toHaveLength(3)
@@ -298,8 +338,8 @@ describe('Idea 族工具（真实 ToolRuntime + 假 subagents）', () => {
     })
     expect(result.isError).toBe(false)
     // 3 首轮 + 3 讨论轮：**只讨论一轮**，不无限收敛
-    expect(env.startCalls).toHaveLength(6)
-    for (const call of env.startCalls.slice(3)) {
+    expect(expertCalls(env)).toHaveLength(6)
+    for (const call of expertCalls(env).slice(3)) {
       expect(call.request.label).toMatch(/:r2$/)
       expect(String(call.request.prompt[0].text)).toContain('[需要你们讨论的分歧点]')
     }
@@ -329,7 +369,7 @@ describe('Idea 族工具（真实 ToolRuntime + 假 subagents）', () => {
     if (first.value.status === 'needs_external_evidence') {
       expect(first.value.escalation_reason).toMatch(/边界带/)
       expect(first.value.panel_context).toContain('[候选 idea]')
-      expect(env.startCalls).toHaveLength(0) // 尚未委派专家
+      expect(expertCalls(env)).toHaveLength(0) // 尚未委派专家
 
       const second = await env.execute(IDEA_TOOLS.score, {
         ...ideaArgs,
@@ -337,10 +377,10 @@ describe('Idea 族工具（真实 ToolRuntime + 假 subagents）', () => {
       })
       expect(second.value.status).toBe('scored')
       expect(second.value.escalated_external).toBe(true)
-      expect(env.startCalls).toHaveLength(3)
+      expect(expertCalls(env)).toHaveLength(3)
       // 外扩证据必须进专家上下文：否则"去跑 Asta"这件事对专家不可见
-      expect(String(env.startCalls[0].request.prompt[0].text)).toContain('外扩检索证据')
-      expect(String(env.startCalls[0].request.prompt[0].text)).toContain('2345.67890')
+      expect(String(expertCalls(env)[0].request.prompt[0].text)).toContain('外扩检索证据')
+      expect(String(expertCalls(env)[0].request.prompt[0].text)).toContain('2345.67890')
     } else {
       expect(first.value.status).toBe('scored')
     }
@@ -354,6 +394,91 @@ describe('Idea 族工具（真实 ToolRuntime + 假 subagents）', () => {
     })
     expect(result.isError).toBe(true)
     expect(JSON.stringify(result.content)).toMatch(/三位专家全部失败/)
+  })
+
+  it('score：粗筛子代理读全库后挑中的条目 → 用它选候选论文，recall_mode=llm_screen', async () => {
+    env = await makeEnv({
+      // 粗筛只报条目编号，**不报论文编号**——论文索引由代码从反向索引展开
+      screenReply: {
+        structured: {
+          matched_problems: [{ entry_id: 'P001', why: '同一个问题：跨数据集泛化' }],
+          matched_modules: [{ idea_module: '频域分支', library_modules: [] }],
+        },
+        stopReason: 'completed',
+      },
+      replies: [EXPERT_REPLY, EXPERT_REPLY, EXPERT_REPLY],
+    })
+    const result = await env.execute(IDEA_TOOLS.score, {
+      idea_id: 'IDEA-S',
+      statement: '把频域分支接到 CLIP 适配器上',
+      problem: '跨数据集泛化不足：未见生成方法下性能下降',
+      method: 'CLIP 参数高效微调检测器',
+      method_modules: [{ name: '频域分支', role: 'r', description: 'd', kind: 'module' }],
+    })
+    expect(result.isError).toBe(false)
+    expect(result.value.recall_mode).toBe('llm_screen')
+
+    // 粗筛委派契约：一个子代理、label=screen:*、prompt 里带着**问题库与模块清单全文**
+    const [screenCall] = screenCalls(env)
+    expect(screenCalls(env)).toHaveLength(1)
+    expect(screenCall.request.label).toBe('screen:IDEA-S')
+    const prompt = String(screenCall.request.prompt[0].text)
+    expect(prompt).toContain('[问题清单')
+    expect(prompt).toContain('P001')                       // 问题库全文在 prompt 里
+    expect(prompt).toContain('[做法模块清单')
+    expect(prompt).toContain('只用上面清单里出现过的编号')      // 明确要求不许自己编编号
+    expect(prompt).toContain('频域分支')                     // idea 自己的模块
+    expect(screenCall.request.outputSchema.properties.matched_problems.type).toBe('array')
+
+    // LLM 挑中的条目 → 代码展开成论文 → 证据卡里出现那篇论文（10.1/a）
+    const evidence = String(expertCalls(env)[0].request.prompt[0].text)
+    expect(evidence).toContain('10.1/a')
+  })
+
+  it('score：粗筛报了库里不存在的编号 → 丢弃并在 recall_notes 里点名（不留"引用不存在的论文"）', async () => {
+    env = await makeEnv({
+      screenReply: {
+        structured: {
+          matched_problems: [
+            { entry_id: 'P001', why: '真条目' },
+            { entry_id: 'P999', why: '编的' },
+          ],
+          matched_modules: [
+            { idea_module: '频域分支', library_modules: [{ module_id: 'MOD404', why: '也是编的' }] },
+          ],
+        },
+        stopReason: 'completed',
+      },
+      replies: [EXPERT_REPLY, EXPERT_REPLY, EXPERT_REPLY],
+    })
+    const result = await env.execute(IDEA_TOOLS.score, {
+      statement: 's', problem: '跨数据集泛化不足：未见生成方法下性能下降', method: 'CLIP 参数高效微调检测器',
+      method_modules: [{ name: '频域分支', role: 'r', description: 'd', kind: 'module' }],
+    })
+    expect(result.value.recall_mode).toBe('llm_screen') // 真条目仍在 → 不算整体失败
+    const notes = result.value.recall_notes.join('\n')
+    expect(notes).toMatch(/P999/)
+    expect(notes).toMatch(/MOD404/)
+    // 编造的模块编号不该出现在专家上下文里
+    expect(String(expertCalls(env)[0].request.prompt[0].text)).not.toContain('MOD404')
+  })
+
+  it('score：粗筛失败 → 退回关键词召回，如实标 recall_mode=keyword 并说明原因', async () => {
+    env = await makeEnv({
+      screenReply: { structured: undefined, stopReason: 'error' },
+      replies: [EXPERT_REPLY, EXPERT_REPLY, EXPERT_REPLY],
+    })
+    const result = await env.execute(IDEA_TOOLS.score, {
+      statement: '把频域分支接到 CLIP 适配器上', problem: '跨数据集泛化不足：未见生成方法下性能下降',
+      method: 'CLIP 参数高效微调检测器',
+      method_modules: [{ name: '频域分支', role: 'r', description: 'd', kind: 'module' }],
+    })
+    // 粗筛挂了不能拖垮整条链路：仍然出分，但结论强度下降必须说清楚
+    expect(result.isError).toBe(false)
+    expect(result.value.status).toBe('scored')
+    expect(result.value.recall_mode).toBe('keyword')
+    expect(result.value.recall_notes.join('\n')).toMatch(/粗筛未成功/)
+    expect(result.value.recall_notes.join('\n')).toMatch(/换词同义/)
   })
 
   it('score：部分专家失败 → 仍按存活专家聚合，但报告如实说明谁没参与', async () => {

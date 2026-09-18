@@ -89,6 +89,21 @@ export interface CollisionReport {
    * 判定（new / partial / known）由专家给——本层只把材料摆齐。
    */
   readonly alignment_tasks: readonly { idea_module: ModuleModuleView; candidates: readonly ModuleHit[] }[]
+  /**
+   * 候选论文是**怎么找出来的**。
+   *
+   * - `llm_screen`：一个子代理读了「问题库 + 模块清单」全文，挑了相关条目，代码把条目
+   *   展开成论文（用户 2026-09-18 定的方向：库小到能整读，就不该用关键词去猜）；
+   * - `keyword`：退回三轴 FTS5 关键词召回（粗筛失败时的兜底）。
+   *
+   * 必须如实报：两种模式找出来的**候选集合不同**，报告的结论强度也不同——
+   * `keyword` 模式下"没找到撞车"的可信度更低，因为关键词会漏掉换词的情况。
+   */
+  readonly recall_mode: 'llm_screen' | 'keyword'
+  /** 粗筛报的、库里没有的编号（模型编造的证据）；`keyword` 模式为空。 */
+  readonly screened_dropped: readonly { readonly kind: 'problem' | 'module'; readonly id: string }[]
+  /** 粗筛没给出任何候选的 idea 模块（真新 / 或它没看懂，两者要人分辨）。 */
+  readonly unmatched_idea_modules: readonly string[]
   readonly computed_at: string
 }
 
@@ -124,18 +139,47 @@ export interface CollideKbPort {
 export type RankSimilarity = (a: string, b: string) => number
 
 /**
- * 跑一次撞车分析（**确定性**，不调 LLM）。
+ * 粗筛给出的候选（`screen.ts` 的产物，已回库校验）。
+ *
+ * 有它就**不走关键词召回**：候选集合由 LLM 读过全库后决定。
+ */
+export interface ScreenedRecall {
+  readonly problems: readonly { readonly entry_id: string; readonly statement: string }[]
+  readonly modules: readonly {
+    readonly idea_module: string
+    readonly module_id: string
+    readonly name: string
+    readonly statement: string
+  }[]
+  readonly dropped: readonly { readonly kind: 'problem' | 'module'; readonly id: string }[]
+  readonly unmatched_idea_modules: readonly string[]
+}
+
+/**
+ * 跑一次撞车分析（**确定性**，不调 LLM——粗筛的 LLM 调用在 `screen.ts`，结果作为入参进来）。
+ *
+ * 候选论文有两条来路，`screened` 给了就走第一条：
+ * 1. **粗筛**（`llm_screen`）：子代理读过「问题库 + 模块清单」全文后挑的条目，
+ *    本函数只负责把条目展开成论文。库小到能整读时，这比关键词可靠——
+ *    关键词会把"用词不同但意思相同"的论文主动扔掉。
+ * 2. **关键词兜底**（`keyword`）：三轴 FTS5 召回。粗筛失败时用，语义上更弱，报告里如实标。
  *
  * @param idea - 结构化 idea（模块化是前提——没有模块就只能退回"整体像不像"）。
  * @param kb - 知识库读接口。
- * @param similarity - 排序用的相似度函数（只影响顺序，见 §5.4）。
+ * @param similarity - 只用于**排序**的相似度函数（不参与判定与打分，见 §5.4）。
+ * @param screened - 粗筛结果；缺省或为空则走关键词召回。
  * @returns 撞车报告；`evidence_cards` 是给专家的材料，`alignment_tasks` 是对齐任务。
  */
 export function collide(
   idea: IdeaCandidate,
   kb: CollideKbPort,
   similarity: RankSimilarity,
+  screened?: ScreenedRecall,
 ): CollisionReport {
+  const useScreen = screened !== undefined
+    && (screened.problems.length > 0 || screened.modules.length > 0)
+  const recallMode: CollisionReport['recall_mode'] = useScreen ? 'llm_screen' : 'keyword'
+
   const rankOf = new Map<string, { problem?: number; module?: number; method?: number }>()
   const noteRank = (paperId: string, axis: 'problem' | 'module' | 'method', rank: number): void => {
     const current = rankOf.get(paperId) ?? {}
@@ -143,19 +187,33 @@ export function collide(
     else rankOf.set(paperId, current)
   }
 
-  // ── 轴 1：问题簇（最有效的一轴——问题库天然成簇，一次能捞出一批论文）──────
+  // ── 轴 1：问题簇 ────────────────────────────────────────────────────────
+  // 粗筛模式：LLM 已经挑好了问题条目，这里只把条目展开成论文（反向索引是验证过的）。
+  // 关键词模式：FTS5 查问题库——问题库天然成簇，一次能捞出一批论文。
   const problemClusters: { problem_entry_id: string; statement: string; papers: readonly string[] }[] = []
-  const problemHits = kb.searchEntries({ store: 'problems', query: idea.problem, limit: AXIS_TOPK })
-  problemHits.forEach((entry, index) => {
+  const problemSeeds: { entry_id: string; statement: string }[] = useScreen
+    ? screened.problems.map((problem) => ({ entry_id: problem.entry_id, statement: problem.statement }))
+    : kb.searchEntries({ store: 'problems', query: idea.problem, limit: AXIS_TOPK })
+      .map((entry) => ({ entry_id: entry.entry_id, statement: entry.statement }))
+
+  problemSeeds.forEach((entry, index) => {
     const papers = kb.papersSharingProblem(entry.entry_id)
     if (papers.length === 0) return
     problemClusters.push({ problem_entry_id: entry.entry_id, statement: entry.statement, papers })
     for (const paperId of papers) noteRank(paperId, 'problem', index + 1)
   })
 
-  // ── 轴 2：模块（★ 对齐单元；idea 的每个模块各查一次）────────────────────
+  // ── 轴 2：模块（★ 对齐单元；idea 的每个模块各一条对齐任务）────────────
   const moduleHits: ModuleHit[] = []
   const alignmentTasks: { idea_module: ModuleModuleView; candidates: ModuleHit[] }[] = []
+
+  // 粗筛模式下按 idea 模块分组取 LLM 挑中的模块；关键词模式下逐个模块查 FTS
+  const screenedByIdeaModule = new Map<string, { module_id: string; name: string; statement: string }[]>()
+  for (const match of screened?.modules ?? []) {
+    const list = screenedByIdeaModule.get(match.idea_module) ?? []
+    list.push({ module_id: match.module_id, name: match.name, statement: match.statement })
+    screenedByIdeaModule.set(match.idea_module, list)
+  }
 
   for (const module of idea.method_modules ?? []) {
     const view: ModuleModuleView = {
@@ -169,8 +227,12 @@ export function collide(
     }
     // 查询串用「名字 + 描述」：只用名字会漏掉"名字不同但做法相同"的（那正是要抓的）。
     const query = `${module.name} ${module.description}`.trim()
-    const hits = kb.searchModules({ query, limit: AXIS_TOPK })
-    const candidates: ModuleHit[] = hits.map((record, index) => {
+    const records: { module_id: string; name: string; statement: string }[] = useScreen
+      ? (screenedByIdeaModule.get(module.name) ?? [])
+      : kb.searchModules({ query, limit: AXIS_TOPK })
+        .map((record) => ({ module_id: record.module_id, name: record.name, statement: record.statement }))
+
+    const candidates: ModuleHit[] = records.map((record, index) => {
       const paperIds = kb.papersOfModule(record.module_id)
       for (const paperId of paperIds) noteRank(paperId, 'module', index + 1)
       return {
@@ -188,14 +250,18 @@ export function collide(
   }
 
   // ── 轴 3：做法（方法条目）────────────────────────────────────────────
+  // 粗筛模式下不查方法库：LLM 看的是「问题清单 + 做法模块清单」，方法层的撞车由模块轴覆盖
+  // （模块比方法条目细一档，实测 69 条模块 vs 21 条方法）。少一轴换来的是"不靠关键词猜"。
   const methodEntries: { entry_id: string; statement: string; paper_ids: readonly string[] }[] = []
-  const methodHits = kb.searchEntries({ store: 'methods', query: idea.method, limit: AXIS_TOPK })
-  methodHits.forEach((entry, index) => {
-    const paperIds = kb.papersOfEntry('methods', entry.entry_id)
-    if (paperIds.length === 0) return
-    methodEntries.push({ entry_id: entry.entry_id, statement: entry.statement, paper_ids: paperIds })
-    for (const paperId of paperIds) noteRank(paperId, 'method', index + 1)
-  })
+  if (!useScreen) {
+    const methodHits = kb.searchEntries({ store: 'methods', query: idea.method, limit: AXIS_TOPK })
+    methodHits.forEach((entry, index) => {
+      const paperIds = kb.papersOfEntry('methods', entry.entry_id)
+      if (paperIds.length === 0) return
+      methodEntries.push({ entry_id: entry.entry_id, statement: entry.statement, paper_ids: paperIds })
+      for (const paperId of paperIds) noteRank(paperId, 'method', index + 1)
+    })
+  }
 
   // ── 候选排序：按"被几轴命中、各轴排名之和"排（不用相似度——它已证明不可信）──
   const candidates = [...rankOf.entries()]
@@ -250,6 +316,9 @@ export function collide(
     candidates: candidates.map((candidate) => candidate.paperId),
     evidence_cards: evidenceCards,
     alignment_tasks: alignmentTasks,
+    recall_mode: recallMode,
+    screened_dropped: screened?.dropped ?? [],
+    unmatched_idea_modules: screened?.unmatched_idea_modules ?? [],
     computed_at: new Date().toISOString(),
   }
 }

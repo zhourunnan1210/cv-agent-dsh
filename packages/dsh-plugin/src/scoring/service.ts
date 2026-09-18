@@ -47,6 +47,16 @@ import type { KbService } from '../kb/service.js'
 import type { KbEntry } from '@cv-research/core'
 import { collide, type CollideKbPort, type CollisionReport } from './collide.js'
 import type { PanelResult } from './panel.js'
+import type { ScreenKbPort, ScreeningResult } from './screen.js'
+
+/**
+ * 粗筛一次最多读多少条模块。
+ *
+ * 用于把"库长到多大时这套全塞的做法会失效"这件事写成一个**可见的数字**：
+ * 现在 69 条（7349 字），到 1000 条就是 10 万字量级——那时该改成先按主题分片，
+ * 而不是继续整读。**现在不为此提前设计复杂度**，但把这个阈值摆在这里。
+ */
+const SCREEN_MODULE_LIMIT = 1000
 
 /** 插件配置。 */
 export interface Config {
@@ -193,18 +203,39 @@ export class IdeaScoreService extends Service {
   }
 
   /**
-   * 撞车分析（整合设计 v1.0 §5）：三轴召回 → 证据卡 → 模块级对齐任务。
+   * 粗筛要读的库位（问题库全量 + 模块清单全量）。
    *
-   * **确定性**，不调 LLM：只做检索与组装；`new / partial / known` 的判定由三位专家给。
-   * 打分链路会**复用同一份报告**（证据卡不重新组装一遍）。
-   *
-   * 排序用 core 的字符 trigram（`lexicalSimilarity`）。**语义排序已实测否决**
-   * （2026-09-18，见整合设计 §9.1）：本地 embedding 在真实库上正负例分布重叠、
-   * 阈值定不出来，且排序不如字面。相关代码与依赖已删除。
+   * 刻意**只给这两块**：合计 8493 字，塞进一个子代理上下文成本可忽略。
+   * 方法/创新/失败库是"每篇论文的细节"，要在确定看哪几篇之后才按论文取（第二段），
+   * 现在就把它们塞进去会白白放大 prompt。
    */
-  async collide(idea: IdeaCandidate): Promise<CollisionReport> {
+  async screenKb(): Promise<ScreenKbPort> {
+    const kb = this.ctx.kb as KbService
+    return {
+      listProblems: () => kb.listEntries()
+        .filter((entry) => entry.store === 'problems')
+        .map((entry) => ({ entry_id: entry.entry_id, statement: String(entry.statement) })),
+      listModules: () => kb.searchModules({ limit: SCREEN_MODULE_LIMIT })
+        .map((module) => ({
+          module_id: module.module_id,
+          name: module.name,
+          statement: module.statement,
+          kinds: module.kinds,
+        })),
+    }
+  }
+
+  /**
+   * 撞车分析（整合设计 v1.0 §5）：候选论文 → 证据卡 → 模块级对齐任务。
+   *
+   * **确定性**，不调 LLM（粗筛那次 LLM 调用在 `screen.ts`，结果作为入参进来）。
+   *
+   * @param screened - 粗筛结果。给了就走 LLM 粗筛（用户 2026-09-18 定的方向）；
+   *   没给或为空则退回三轴关键词召回，报告里用 `recall_mode` 如实标出用的是哪种。
+   */
+  async collide(idea: IdeaCandidate, screened?: ScreeningResult): Promise<CollisionReport> {
     const kb = this.ctx.kb as unknown as CollideKbPort
-    return collide(idea, kb, lexicalSimilarity)
+    return collide(idea, kb, lexicalSimilarity, screened)
   }
 
   /**
