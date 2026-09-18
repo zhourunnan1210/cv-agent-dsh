@@ -59,6 +59,16 @@ export const EXPERT_PERSONAS: Record<ExpertRole, string> = {
   ].join(' '),
 }
 
+/**
+ * 专家的工具面：**只给 `read`**（继承旧裁判的隔离红线，§11.8 约束 1）。
+ *
+ * 理想情况下专家不需要任何工具（证据全在 prompt 里）。给 `read` 是允许"受限追问"：
+ * 专家若认为某条证据片段不足以判断，可以读随包给它的文件。
+ * **不给检索工具**——否则专家会自行扩大证据集合，把"输入由确定性检索决定"这条底线破掉。
+ * 三位专家共用同一份工具面：分工靠 persona，不靠工具。
+ */
+export const EXPERT_TOOL_FILTER = { allow: ['read'] } as const
+
 /** 四维分的取值域（schema 与本地校验共用一份）。 */
 const SCORE_FIELDS = ['novelty_problem', 'novelty_method', 'novelty_combo', 'feasibility'] as const
 
@@ -197,6 +207,7 @@ export async function runExpertPanel(subagents: SubagentLike, options: PanelOpti
         parent: options.agent,
         label: `expert:${role}${round > 1 ? `:r${round}` : ''}`,
         prompt: [{ type: 'text', text: prompt }],
+        toolFilter: EXPERT_TOOL_FILTER,
         persona: EXPERT_PERSONAS[role],
         outputSchema: expertOutputSchema(),
         maxDepth: SUBAGENT_MAX_DEPTH,

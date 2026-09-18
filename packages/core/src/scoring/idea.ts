@@ -10,6 +10,7 @@
 
 import type { KnowledgeBase } from '../schema/kb.js'
 import type { MethodModule, MethodModuleKind } from '../schema/extraction.js'
+import type { Disagreement, ExpertAggregation, ExpertRole, ExpertVerdict } from '../experts.js'
 
 /**
  * Idea 的一个组成模块——**与论文侧 `MethodModule` 同构**。
@@ -289,6 +290,47 @@ export interface ScoringReport {
   /** 裁判标识与时间（P3-3 新增，审计用）。 */
   readonly judged_by?: string
   readonly judged_at?: string
+  /**
+   * 三专家面板的审计载荷（整合设计 v1.0 §6.6）。
+   *
+   * 旧链路只有一个裁判——报告里只有"算出来的分数"。面板链路下，报告必须能回答
+   * "三位专家各说了什么、哪里分歧、讨论后有没有收敛"，否则聚合出的中位数不可审计。
+   *
+   * 可选：`judged_by`/`judge` 单裁判链路仍可用（旧报告不缺字段）。
+   */
+  readonly panel?: PanelAudit
+}
+
+/**
+ * 三专家面板的审计载荷（整合设计 v1.0 §6.6）。
+ *
+ * `experts` 是**参与最终聚合**的那一轮判定（讨论后即第二轮），`initial` 保留首轮，
+ * 使"讨论改变了什么"可以被复核，而不是只能相信结论。
+ */
+export interface PanelAudit {
+  readonly experts: readonly ExpertVerdict[]
+  /** 首轮判定（审计：看得出讨论前后差异）。 */
+  readonly initial?: readonly ExpertVerdict[]
+  /** 首轮检测到的分歧。 */
+  readonly disagreements: readonly Disagreement[]
+  /** 讨论后仍在的分歧（非空表示 panel 是"带分歧收敛"的）。 */
+  readonly remaining: readonly Disagreement[]
+  readonly discussed: boolean
+  /** 每位专家各自给的分数（审计：看得出中位数从哪几个数来）。 */
+  readonly per_dimension?: ExpertAggregation['per_dimension']
+  /** 失败或被丢弃的专家——少于 3 位时聚合照跑，但报告要如实说。 */
+  readonly failed: readonly { readonly expert: ExpertRole; readonly error: string }[]
+  /** 判定与分数矛盾之处（面板自洽性检查）。 */
+  readonly conflicts: readonly string[]
+  /** 给了分却没有 `evidence_refs` 的模块判定。 */
+  readonly unsupported: readonly string[]
+  /** idea 模块级对齐结论（跨专家多数票），工具层直接汇报这个。 */
+  readonly module_alignment: readonly {
+    readonly idea_module: string
+    readonly status: 'new' | 'partial' | 'known'
+    /** 少数派意见（有的话）——多数票不等于无异议。 */
+    readonly dissent: readonly { readonly expert: ExpertRole; readonly status: string; readonly reason: string }[]
+  }[]
 }
 
 /**

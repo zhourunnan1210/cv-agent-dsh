@@ -5,8 +5,9 @@
  * - 委派请求形状（provider/parent/label/toolFilter/persona/outputSchema/maxDepth）；
  * - 生成：多视角并发 → 合并去重、空视角与失败视角如实回传（不假装成功）；
  * - 打分：本地召回 → 边界带外扩（回传 needs_external_evidence，由主 Agent 去跑 Asta）
- *   → 裁判逐条判定 → 确定性聚合；报告自洽；失败库 blocked_by/waivers 透出；
- * - 契约刚性：裁判未按 outputSchema 应答 → 明确 isError，而不是静默给个分。
+ *   → **三专家面板**（并行委派 + 分歧一轮讨论 + 中位数聚合）；报告自洽；失败库 blocked_by/waivers 透出；
+ * - 契约刚性：三位专家全部未按 outputSchema 应答 → 明确 isError，而不是静默给个分；
+ *   部分失败 → 按存活专家聚合，但报告必须点名谁没参与。
  */
 import { afterEach, describe, expect, it } from 'vitest'
 import { mkdtemp, rm, writeFile, mkdir } from 'node:fs/promises'
@@ -129,11 +130,19 @@ const IDEA_REPLY = {
   stopReason: 'completed',
 }
 
-const JUDGE_REPLY = {
+/**
+ * 三位专家的结构化应答（同一位专家的通用形状：模块判定 + 四维分 + 理由）。
+ *
+ * 三条给**相同**的分数是刻意的：面板只在分歧（维度分差 > 15）时才跑讨论轮。
+ * 测试要断言"委派了几次"，就必须让首轮无分歧、不触发第二轮。
+ */
+const EXPERT_REPLY = {
   structured: {
-    verdicts: [{ ref_id: 'P001', verdict: 'superficial', reason: '该问题条目描述的是泛化困境，本 idea 提出的是具体机制' }],
-    feasibility: 72,
-    rationale: '问题侧只是主题相关；方法侧无可比条目。',
+    module_verdicts: [
+      { idea_module: '频域分支', status: 'partial', evidence_refs: ['M001'], reason: '库里有频域分支，但接的是别的适配器' },
+    ],
+    dimension_scores: { novelty_problem: 60, novelty_method: 55, novelty_combo: 50, feasibility: 70 },
+    rationale: '问题侧只是主题相关；方法侧的频域分支与库中做法有关键差异。',
   },
   stopReason: 'completed',
 }
@@ -212,14 +221,15 @@ describe('Idea 族工具（真实 ToolRuntime + 假 subagents）', () => {
     expect(result.value.per_lens[0].lens).toContain('跨数据集泛化不足')
   })
 
-  it('score：本地证据充足 → 直接委派裁判并产出可复算报告（含包/模式/失败库透出）', async () => {
-    env = await makeEnv({ replies: [JUDGE_REPLY] })
+  it('score：本地证据充足 → 并行委派三专家并产出可复算报告（含模块对齐/专家分/包/模式透出）', async () => {
+    env = await makeEnv({ replies: [EXPERT_REPLY, EXPERT_REPLY, EXPERT_REPLY] })
     const result = await env.execute(IDEA_TOOLS.score, {
       idea_id: 'IDEA-1',
       statement: '把频域分支接到 CLIP 适配器上',
       problem: '跨数据集泛化不足：未见生成方法下性能下降',
       method: 'CLIP 参数高效微调检测器',
       innovation: '频域感知适配器',
+      method_modules: [{ name: '频域分支', role: '提取频域线索', description: '在适配器旁路加频域分支', kind: 'module' }],
       baselines: ['10.1/b'],
     })
     expect(result.isError).toBe(false)
@@ -231,17 +241,77 @@ describe('Idea 族工具（真实 ToolRuntime + 假 subagents）', () => {
     expect(result.value.escalated_external).toBe(false)
     expect(typeof result.value.total).toBe('number')
 
-    // 裁判委派契约：与生成者独立、只给 read、outputSchema 为逐条判定
-    const [judgeCall] = env.startCalls
-    expect(judgeCall.request.toolFilter).toEqual({ allow: ['read'] })
-    expect(judgeCall.request.persona).toContain('Judge')
-    expect(String(judgeCall.request.prompt[0].text)).toContain('不要给总分')
-    expect(judgeCall.request.outputSchema.properties.verdicts.type).toBe('array')
+    // 面板委派契约：三位专家、各自 persona、只给 read（不让专家自行扩大证据集合）、
+    // outputSchema 为模块级对齐 + 四维分
+    expect(env.startCalls).toHaveLength(3)
+    expect(env.startCalls.map((call) => call.request.label)).toEqual(['expert:method', 'expert:evaluation', 'expert:domain'])
+    for (const call of env.startCalls) {
+      expect(call.name).toBe('spawn')
+      expect(call.request.parent).toBe(ROOT_AGENT)
+      expect(call.request.toolFilter).toEqual({ allow: ['read'] })
+      expect(call.request.outputSchema.properties.module_verdicts.type).toBe('array')
+      expect(call.request.outputSchema.properties.dimension_scores.type).toBe('object')
+      // 无分歧（三位给相同的分）→ 不该触发讨论轮
+      expect(String(call.request.prompt[0].text)).not.toContain('[需要你们讨论的分歧点]')
+    }
+    expect(env.startCalls[0].request.persona).toContain('方法/架构专家')
+    expect(env.startCalls[1].request.persona).toContain('实验/评测专家')
+    expect(env.startCalls[2].request.persona).toContain('领域/问题专家')
+
+    // 报告必须能回答"分数从哪来"：三位专家各自的分数都在
+    expect(result.value.experts).toHaveLength(3)
+    expect(result.value.experts.map((expert) => expert.expert)).toEqual(['method', 'evaluation', 'domain'])
+    // 模块对齐结论按多数票给出（三位一致 → partial），且无少数派
+    expect(result.value.module_alignment).toEqual([{ idea_module: '频域分支', status: 'partial', dissent: [] }])
+    // 判 known 才高风险；这里是 partial 且档位由分数决定 → 只断言取值合法
+    expect(['high', 'medium', 'low']).toContain(result.value.risk_level)
+  })
+
+  it('score：专家分歧 → 只跑一轮讨论；讨论后按中位数聚合', async () => {
+    // 首轮 method 给 novelty_method=90、其余给 40 → 分差 50 > 阈值 15 → 触发讨论轮
+    const split = (noveltyMethod, status) => ({
+      structured: {
+        module_verdicts: [{ idea_module: '频域分支', status, evidence_refs: ['M001'], reason: `${status} 的理由` }],
+        dimension_scores: { novelty_problem: 60, novelty_method: noveltyMethod, novelty_combo: 50, feasibility: 70 },
+        rationale: '各自判断',
+      },
+      stopReason: 'completed',
+    })
+    const agreed = (noveltyMethod) => ({
+      structured: {
+        module_verdicts: [{ idea_module: '频域分支', status: 'partial', evidence_refs: ['M001'], reason: '讨论后维持 partial' }],
+        dimension_scores: { novelty_problem: 60, novelty_method: noveltyMethod, novelty_combo: 50, feasibility: 70 },
+        rationale: '讨论后修正',
+      },
+      stopReason: 'completed',
+    })
+    env = await makeEnv({
+      replies: [
+        split(90, 'new'), split(40, 'known'), split(40, 'known'), // 首轮
+        agreed(50), agreed(50), agreed(50),                        // 讨论轮
+      ],
+    })
+    const result = await env.execute(IDEA_TOOLS.score, {
+      idea_id: 'IDEA-D',
+      statement: 's', problem: '跨数据集泛化不足：未见生成方法下性能下降', method: 'CLIP 参数高效微调检测器',
+      method_modules: [{ name: '频域分支', role: 'r', description: 'd', kind: 'module' }],
+    })
+    expect(result.isError).toBe(false)
+    // 3 首轮 + 3 讨论轮：**只讨论一轮**，不无限收敛
+    expect(env.startCalls).toHaveLength(6)
+    for (const call of env.startCalls.slice(3)) {
+      expect(call.request.label).toMatch(/:r2$/)
+      expect(String(call.request.prompt[0].text)).toContain('[需要你们讨论的分歧点]')
+    }
+    // 聚合取讨论后的第二轮（未收敛的分歧仍要如实报出来）
+    expect(result.value.experts.map((expert) => expert.novelty_method)).toEqual([50, 50, 50])
+    expect(result.value.dimensions.novelty_method).toBe(50)
+    expect(Array.isArray(result.value.panel_notes)).toBe(true)
   })
 
   it('score：边界带命中 → needs_external_evidence（把外扩检索交回主 Agent），带证据后正常打分', async () => {
     // 造一条与库中问题"相关但不同文"的 idea（相似度落在 [0.1,0.3)）
-    env = await makeEnv({ replies: [JUDGE_REPLY] })
+    env = await makeEnv({ replies: [EXPERT_REPLY, EXPERT_REPLY, EXPERT_REPLY] })
     const ideaArgs = {
       idea_id: 'IDEA-9',
       statement: '跨数据集泛化下的增量检测',
@@ -258,8 +328,8 @@ describe('Idea 族工具（真实 ToolRuntime + 假 subagents）', () => {
     // 要么直接打分（相似度超出边界带），要么要求外扩——断言不漏两种合法路径
     if (first.value.status === 'needs_external_evidence') {
       expect(first.value.escalation_reason).toMatch(/边界带/)
-      expect(first.value.judge_payload).toContain('[候选 idea]')
-      expect(env.startCalls).toHaveLength(0) // 尚未委派裁判
+      expect(first.value.panel_context).toContain('[候选 idea]')
+      expect(env.startCalls).toHaveLength(0) // 尚未委派专家
 
       const second = await env.execute(IDEA_TOOLS.score, {
         ...ideaArgs,
@@ -267,20 +337,41 @@ describe('Idea 族工具（真实 ToolRuntime + 假 subagents）', () => {
       })
       expect(second.value.status).toBe('scored')
       expect(second.value.escalated_external).toBe(true)
-      expect(env.startCalls).toHaveLength(1)
+      expect(env.startCalls).toHaveLength(3)
+      // 外扩证据必须进专家上下文：否则"去跑 Asta"这件事对专家不可见
       expect(String(env.startCalls[0].request.prompt[0].text)).toContain('外扩检索证据')
+      expect(String(env.startCalls[0].request.prompt[0].text)).toContain('2345.67890')
     } else {
       expect(first.value.status).toBe('scored')
     }
   })
 
-  it('score：裁判未按契约应答 → 明确 isError（不静默给分）', async () => {
-    env = await makeEnv({ replies: [{ structured: undefined, stopReason: 'error' }] })
+  it('score：三位专家全部未按契约应答 → 明确 isError（不静默给分）', async () => {
+    const broken = { structured: undefined, stopReason: 'error' }
+    env = await makeEnv({ replies: [broken, broken, broken] })
     const result = await env.execute(IDEA_TOOLS.score, {
       statement: 's', problem: '跨数据集泛化不足：未见生成方法下性能下降', method: 'CLIP 参数高效微调检测器',
     })
     expect(result.isError).toBe(true)
-    expect(JSON.stringify(result.content)).toMatch(/未按契约应答/)
+    expect(JSON.stringify(result.content)).toMatch(/三位专家全部失败/)
+  })
+
+  it('score：部分专家失败 → 仍按存活专家聚合，但报告如实说明谁没参与', async () => {
+    env = await makeEnv({
+      replies: [
+        EXPERT_REPLY,
+        { structured: undefined, stopReason: 'error' }, // evaluation 专家崩了
+        EXPERT_REPLY,
+      ],
+    })
+    const result = await env.execute(IDEA_TOOLS.score, {
+      statement: 's', problem: '跨数据集泛化不足：未见生成方法下性能下降', method: 'CLIP 参数高效微调检测器',
+      method_modules: [{ name: '频域分支', role: 'r', description: 'd', kind: 'module' }],
+    })
+    expect(result.isError).toBe(false)
+    expect(result.value.experts).toHaveLength(2) // 只有两位参与聚合
+    expect(result.value.panel_notes.join('\n')).toMatch(/evaluation/)
+    expect(result.value.report_consistent).toBe(true)
   })
 
   it('score：external_evidence 非法 JSON → 明确 isError', async () => {

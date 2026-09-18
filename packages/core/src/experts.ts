@@ -223,6 +223,64 @@ export function aggregateExperts(
   return { dimensions, total: rounded, band, per_dimension: perDimension, disagreement, conflicts, unsupported }
 }
 
+/**
+ * idea 模块级对齐结论：跨专家**多数票** + 少数派留痕。
+ *
+ * 为什么不取"最严"或"最松"：三位专家分工不同（方法/评测/领域），对同一模块给出不同
+ * 判定是**正常**的（"这个机制是新的，但它服务的问题已被解决"）。多数票给出主结论，
+ * `dissent` 保留异议——否则报告会把"两位说新、一位说旧"粉饰成"一致认为是新的"。
+ *
+ * 平票（三专家各执一词，或两两相同无法过半）按**更保守**的一方取（known > partial > new）：
+ * 撞车检测里乐观的代价比保守高。
+ *
+ * @param verdicts - 参与最终聚合的那一轮判定。
+ * @returns 每个 idea 模块一条，顺序按首次出现。
+ */
+export function moduleAlignment(verdicts: readonly ExpertVerdict[]): {
+  idea_module: string
+  status: 'new' | 'partial' | 'known'
+  dissent: { expert: ExpertRole; status: string; reason: string }[]
+}[] {
+  const order: string[] = []
+  const byModule = new Map<string, { expert: ExpertRole; status: 'new' | 'partial' | 'known'; reason: string }[]>()
+
+  for (const verdict of verdicts) {
+    for (const moduleVerdict of verdict.module_verdicts) {
+      if (!byModule.has(moduleVerdict.idea_module)) {
+        byModule.set(moduleVerdict.idea_module, [])
+        order.push(moduleVerdict.idea_module)
+      }
+      // 同一位专家重复判同一模块时只认第一条：重复不构成多数
+      const positions = byModule.get(moduleVerdict.idea_module)!
+      if (positions.some((position) => position.expert === verdict.expert)) continue
+      positions.push({ expert: verdict.expert, status: moduleVerdict.status, reason: moduleVerdict.reason })
+    }
+  }
+
+  // 保守序：已知 > 部分 > 新
+  const severity: Record<'new' | 'partial' | 'known', number> = { new: 0, partial: 1, known: 2 }
+
+  return order.map((ideaModule) => {
+    const positions = byModule.get(ideaModule) ?? []
+    const counts = new Map<'new' | 'partial' | 'known', number>()
+    for (const position of positions) counts.set(position.status, (counts.get(position.status) ?? 0) + 1)
+    let status: 'new' | 'partial' | 'known' = 'new'
+    let best = -1
+    for (const [candidateStatus, count] of counts) {
+      const better = count > best
+        || (count === best && severity[candidateStatus] > severity[status])
+      if (better) {
+        status = candidateStatus
+        best = count
+      }
+    }
+    const dissent = positions
+      .filter((position) => position.status !== status)
+      .map((position) => ({ expert: position.expert, status: position.status as string, reason: position.reason }))
+    return { idea_module: ideaModule, status, dissent }
+  })
+}
+
 /** 把分歧清单渲染成讨论轮的 prompt 片段（三位专家互见理由）。 */
 export function renderDiscussionPrompt(disagreements: readonly Disagreement[]): string {
   if (disagreements.length === 0) return ''

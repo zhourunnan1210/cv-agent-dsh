@@ -16,6 +16,7 @@ import {
   aggregateExperts,
   detectDisagreements,
   median,
+  moduleAlignment,
   renderDiscussionPrompt,
   type ExpertVerdict,
   type ScoringDimensions,
@@ -179,5 +180,63 @@ describe('分歧标记', () => {
 describe('维度键与权重快照同源', () => {
   it('DIMENSION_KEYS 覆盖四维且顺序稳定', () => {
     expect([...DIMENSION_KEYS]).toEqual(['novelty_problem', 'novelty_method', 'novelty_combo', 'feasibility'])
+  })
+})
+
+describe('模块级对齐（跨专家多数票）', () => {
+  const verdict = (status: ExpertVerdict['module_verdicts'][number]['status']): ExpertVerdict['module_verdicts'] => [
+    { idea_module: '频域约束', status, evidence_refs: ['MOD001'], reason: `${status} 的理由` },
+  ]
+
+  it('两位判 new、一位判 known → 结论取多数派的 new，且少数派意见保留在 dissent', () => {
+    const result = moduleAlignment([
+      expert('method', scores({}), verdict('new')),
+      expert('evaluation', scores({}), verdict('new')),
+      expert('domain', scores({}), verdict('known')),
+    ])
+    expect(result).toEqual([
+      { idea_module: '频域约束', status: 'new', dissent: [{ expert: 'domain', status: 'known', reason: 'known 的理由' }] },
+    ])
+  })
+
+  it('平票（各执一词）→ 取更保守的一方（known > partial > new），乐观的代价比保守高', () => {
+    const result = moduleAlignment([
+      expert('method', scores({}), verdict('new')),
+      expert('evaluation', scores({}), verdict('partial')),
+      expert('domain', scores({}), verdict('known')),
+    ])
+    expect(result[0]?.status, '三票分散时不能倒向"最新"').toBe('known')
+    expect(result[0]?.dissent).toHaveLength(2)
+  })
+
+  it('同一位专家重复判同一模块 → 只认第一条（重复不构成多数）', () => {
+    const repeated: ExpertVerdict = {
+      ...expert('method', scores({})),
+      module_verdicts: [
+        { idea_module: '频域约束', status: 'known', evidence_refs: ['MOD001'], reason: '第一次' },
+        { idea_module: '频域约束', status: 'known', evidence_refs: ['MOD001'], reason: '又说一遍' },
+      ],
+    }
+    const result = moduleAlignment([
+      repeated,
+      expert('evaluation', scores({}), verdict('new')),
+      expert('domain', scores({}), verdict('new')),
+    ])
+    expect(result[0]?.status, '一位专家说两次不等于两位专家都这么说').toBe('new')
+    expect(result[0]?.dissent).toHaveLength(1)
+  })
+
+  it('一位专家漏判某模块 → 不因此判它"一致"，只在有票的专家间取多数', () => {
+    const result = moduleAlignment([
+      expert('method', scores({}), verdict('partial')),
+      expert('evaluation', scores({}), []),
+    ])
+    expect(result).toEqual([
+      { idea_module: '频域约束', status: 'partial', dissent: [] },
+    ])
+  })
+
+  it('无模块判定 → 空结果（而不是造一个假模块）', () => {
+    expect(moduleAlignment([expert('method', scores({}))])).toEqual([])
   })
 })

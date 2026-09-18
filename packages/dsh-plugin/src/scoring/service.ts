@@ -30,12 +30,14 @@ import {
   classifyRisk,
   deriveEvidence,
   lexicalSimilarity,
+  moduleAlignment,
   totalScore,
   type CollisionEvidence,
   type DeriveEvidenceInput,
   type HitInput,
   type IdeaCandidate,
   type JudgeInput,
+  type PanelAudit,
   type ScoringConfig,
   type ScoringDimensions,
   type ScoringReport,
@@ -44,6 +46,7 @@ import {
 import type { KbService } from '../kb/service.js'
 import type { KbEntry } from '@cv-research/core'
 import { collide, type CollideKbPort, type CollisionReport } from './collide.js'
+import type { PanelResult } from './panel.js'
 
 /** 插件配置。 */
 export interface Config {
@@ -152,6 +155,27 @@ export class IdeaScoreService extends Service {
       frozen_by: pack.frozen_by,
       // embedding 未接入前一律 keyword_only（§9.3 结论）——如实标记，不假装是向量检索
       retrieval_mode: 'keyword_only',
+    }
+  }
+
+  /**
+   * 面板打分所需的 pack 口径：四维权重与档位区间。
+   *
+   * 单独开一个方法而不是让工具层读 pack 文件：**口径只能有一个来源**，
+   * 工具层拿到的权重与报告里 `weights_snapshot` 必须是同一份（否则复算会对不上）。
+   */
+  async panelConfig(): Promise<{
+    weights: ScoringDimensions
+    bands: { proceed: readonly [number, number]; revise: readonly [number, number]; abandon: readonly [number, number] }
+    pack_frozen: boolean
+    pack_ref: string
+  }> {
+    const pack = await this.loadPack()
+    return {
+      weights: pack.config.dimensions,
+      bands: pack.config.suggestion_bands,
+      pack_frozen: pack.frozen,
+      pack_ref: `${pack.pack_id}@${pack.version}`,
     }
   }
 
@@ -275,8 +299,130 @@ export class IdeaScoreService extends Service {
     }
   }
 
-  /** 组装裁判上下文（工具层把它交给裁判子代理；**不在本层调用 LLM**）。 */
-  buildJudgePayload(options: {
+  /**
+   * 由**三专家面板**产出打分报告（整合设计 v1.0 §6.6，替代单裁判链路）。
+   *
+   * 与 `aggregate` 的区别，正是新机制的要点：
+   * - 四维分不再由 core 从字符相似度算，而是三位专家**各自推理给出**、按维度取中位数；
+   * - `evidence` 故意**不填**：面板链路的依据是模块级对齐（`panel.module_alignment`），
+   *   而 `CollisionEvidence.similarity` 是必填字段——填 0 等于伪造一个"相似度为零"的
+   *   证据。宁可空着，也不编一个数字（§11.5 的教训就是把"算出来的数"当成了"判出来的结论"）。
+   * - 风险不再由检索相似度决定，而由**模块对齐结论**决定：有模块被判 `known`（库里已有）
+   *   就是高风险，无论分数算出来多高。
+   */
+  async reportFromPanel(options: {
+    idea: IdeaCandidate
+    panel: PanelResult
+    collision: CollisionReport
+    retrievalMode: 'vector' | 'keyword_only'
+    escalatedExternal?: boolean
+  }): Promise<ScoringReport & { pack_frozen: boolean; pack_ref: string; weight_sum: number }> {
+    const pack = await this.loadPack()
+    const aggregation = options.panel.aggregation
+    const panel = this.toPanelAudit(options.panel)
+
+    const warning = pack.frozen ? '' : `[未冻结 pack：${pack.path} 为草案，权重尚未获人工评审] `
+    const weightSum = Object.values(pack.config.dimensions).reduce((sum, value) => sum + value, 0)
+
+    // 失败库复查：面板不提"失败条目"这一概念——它判的是模块对齐。这里只做一件事：
+    // 把专家引用到的失败库条目按对齐结论分成"条件仍成立"（阻塞）与"条件已变"（waiver）。
+    const failureReview = this.failureReviewFrom(options.collision, panel)
+
+    const similarPapers = options.collision.evidence_cards.slice(0, 10).map((card) => ({
+      paper_id: card.paper_id,
+      reason: card.meta.title === '' ? card.paper_id : `${card.meta.title}${card.meta.year === undefined ? '' : ` (${card.meta.year})`}`,
+      // 检索侧排序分保留原值：它只用于**排序**，不参与判定与打分（§9 步骤 4a 边界）
+      score: 1 / (1 + (card.axis_ranks.problem ?? card.axis_ranks.module ?? card.axis_ranks.method ?? 0)),
+    }))
+
+    return {
+      idea_id: options.idea.idea_id,
+      total: aggregation.total,
+      dimensions: aggregation.dimensions,
+      weights_snapshot: pack.config.dimensions,
+      risk_level: riskFromPanel(aggregation.band, panel),
+      similar_papers: similarPapers,
+      suggestion: aggregation.band,
+      rationale: `${warning}${this.panelRationale(options.panel)}`.trim(),
+      retrieval_mode: options.retrievalMode,
+      escalated_external: options.escalatedExternal ?? false,
+      failure_review: failureReview,
+      judged_by: `panel:${options.panel.final.map((verdict) => verdict.expert).join('+')}`,
+      judged_at: options.collision.computed_at,
+      panel,
+      pack_frozen: pack.frozen,
+      pack_ref: `${pack.pack_id}@${pack.version}`,
+      weight_sum: weightSum,
+    }
+  }
+
+  /** 面板结果 → 报告审计载荷（`module_alignment` 由 core 的多数票算，本层不重算）。 */
+  private toPanelAudit(panel: PanelResult): PanelAudit {
+    return {
+      experts: panel.final,
+      initial: panel.initial,
+      disagreements: panel.disagreements,
+      remaining: panel.remaining,
+      discussed: panel.discussed,
+      per_dimension: panel.aggregation.per_dimension,
+      failed: panel.failed,
+      conflicts: panel.aggregation.conflicts,
+      unsupported: panel.aggregation.unsupported,
+      module_alignment: moduleAlignment(panel.final),
+    }
+  }
+
+  /** 报告 rationale：三位专家的理由按专家顺序拼，讨论发生时要说明。 */
+  private panelRationale(panel: PanelResult): string {
+    const lines = panel.final
+      .filter((verdict) => verdict.rationale.trim() !== '')
+      .map((verdict) => `[${verdict.expert}] ${verdict.rationale}`)
+    if (panel.discussed) {
+      lines.push(`（出现 ${panel.disagreements.length} 处分歧，已进行一轮讨论；讨论后仍有 ${panel.remaining.length} 处未收敛）`)
+    }
+    if (panel.failed.length > 0) {
+      lines.push(`（${panel.failed.length} 位专家未参与最终聚合：${panel.failed.map((item) => item.expert).join('、')}）`)
+    }
+    return lines.join('\n')
+  }
+
+  /**
+   * 失败库复查（面板链路）：只认**专家引用过**的失败条目。
+   *
+   * 判据：一位专家把它引作 `known` 判定的依据 → 条件仍成立（阻塞）；引作 `new`/`partial`
+   * 的依据 → 条件已变（waiver，理由取该专家的理由）。未被引用的失败条目不算数——
+   * 检索命中不等于撞车，这正是面板相对"相似度阈值"的改进。
+   */
+  private failureReviewFrom(collision: CollisionReport, panel: PanelAudit): NonNullable<ScoringReport['failure_review']> {
+    const failureRefs = new Set<string>()
+    for (const card of collision.evidence_cards) {
+      for (const entry of card.entries) if (entry.store === 'failures') failureRefs.add(entry.entry_id)
+    }
+
+    const blocked = new Set<string>()
+    const waivers = new Map<string, string>()
+    for (const verdict of panel.experts) {
+      for (const moduleVerdict of verdict.module_verdicts) {
+        for (const ref of moduleVerdict.evidence_refs) {
+          if (!failureRefs.has(ref)) continue
+          if (moduleVerdict.status === 'known') {
+            blocked.add(ref)
+            waivers.delete(ref)
+          } else if (!blocked.has(ref) && moduleVerdict.reason !== '') {
+            waivers.set(ref, moduleVerdict.reason)
+          }
+        }
+      }
+    }
+
+    return {
+      hit_refs: [...failureRefs],
+      blocked_by: [...blocked],
+      waivers: [...waivers].map(([ref_id, reason]) => ({ ref_id, reason })),
+    }
+  }
+
+  /** 组装裁判上下文（工具层把它交给裁判子代理；**不在本层调用 LLM**）。 */  buildJudgePayload(options: {
     idea: Pick<IdeaCandidate, 'statement' | 'problem' | 'method' | 'innovation'>
     derived: ReturnType<typeof deriveEvidence>
     evidence: RetrievedEvidence
@@ -318,6 +464,22 @@ export class IdeaScoreService extends Service {
     )
     return { consistent: recomputed === report.total, recomputed }
   }
+}
+
+/**
+ * 风险等级（面板链路）：由**对齐结论**决定，而不是由检索相似度决定。
+ *
+ * 这是新机制的实质差别：旧链路里"同义改写"的相似度只有 0.0039，于是真撞车的风险被算成
+ * `low`；面板链路下只要有一位以上专家判某模块 `known`（库里已有），风险就是 `high`。
+ */
+export function riskFromPanel(
+  band: 'proceed' | 'revise' | 'abandon',
+  panel: { module_alignment: readonly { status: string }[]; remaining: readonly unknown[] },
+): 'high' | 'medium' | 'low' {
+  const known = panel.module_alignment.filter((item) => item.status === 'known').length
+  if (known > 0 || band === 'abandon') return 'high'
+  if (panel.remaining.length > 0 || band === 'revise') return 'medium'
+  return 'low'
 }
 
 /** 默认导出：loader 取 `module.default`（E18-②）。 */

@@ -1,10 +1,14 @@
 /**
  * Idea 族工具（P3-3b）：`cvagent_idea_generate` 与 `cvagent_idea_score`。
  *
- * 分工（勘误 §11.2，用户 2026-09-17 裁定）：
+ * 分工（勘误 §11.2，用户 2026-09-17 裁定；整合设计 v1.0 §6 修订）：
  * - **生成**：N 个不同视角的 Generator 子代理并发产出 → 主 Agent 侧合并去重（视角标记保留）；
  * - **打分**：确定性召回（`ideaScore` 服务）→ 边界带命中则**外扩 Asta**（由主 Agent 执行检索后回传）
- *   → **裁判子代理**逐条判定（与 Generator 无共享上下文）→ 确定性聚合 → 失败库复查结论。
+ *   → **三专家面板**（方法/评测/领域，并行、互不可见）各自判模块级对齐并给四维分
+ *   → 分歧触发**一轮**讨论 → 中位数聚合 → 失败库复查结论。
+ *
+ * 单裁判链路（一个 LLM 逐条判 collision、分数由字符相似度算出）已被面板取代：
+ * 同义改写的相似度只有 0.0039，那条链路会把真撞车判成满分新颖。
  *
  * 本行是 `ideaScore` 与 `kb` 的消费者，必须与它们同处一个 isolate group（§4.4.1）。
  *
@@ -15,12 +19,14 @@ import type { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-tools'
 
-import { GRANULARITY, normalizeTitle, renderGranularityPrompt, type IdeaCandidate } from '@cv-research/core'
+import { GRANULARITY, normalizeTitle, renderGranularityPrompt, type IdeaCandidate, type IdeaModule, type MethodModuleKind, type PanelAudit } from '@cv-research/core'
 
 import { IDEA_TOOLS } from '../tools/names.js'
 import type { IdeaScoreService } from './service.js'
 import { SUBAGENT_MAX_DEPTH } from '../subagent.js'
 import type { SubagentLike } from '../subagent.js'
+import { renderCollisionContext } from './collide.js'
+import { runExpertPanel } from './panel.js'
 
 export const name = 'cvagent-idea-tools'
 export const inject = ['ideaScore', 'kb', 'tools']
@@ -34,16 +40,6 @@ export const inject = ['ideaScore', 'kb', 'tools']
  */
 export const GENERATOR_TOOL_FILTER = { allow: ['cvagent_kb_search', 'cvagent_kb_summary'] } as const
 
-/**
- * 裁判子代理的工具面。
- *
- * 理想的裁判不需要任何工具（证据包全在 prompt 里）。这里给 `read` 是为了
- * 允许"受限追问"（§11.8 约束 5）：裁判若认为某条证据的片段不足以判断，
- * 可以读我们随包给它的小文件（如 pack 的枚举定义），而不是去检索整个库。
- * **不给检索工具**——否则它可能自行扩大证据集合，破坏"输入由确定性检索决定"（约束 1）。
- */
-export const JUDGE_TOOL_FILTER = { allow: ['read'] } as const
-
 /** Generator 角色 persona（§16.2 五段式的角色段）。 */
 export const GENERATOR_PERSONA = [
   '你是 cv-research 的 Idea Generator 子代理：只负责在**给定的一个视角**内提出候选研究 idea。',
@@ -52,18 +48,6 @@ export const GENERATOR_PERSONA = [
   '每个候选要写清：一句话陈述、面向的问题、拟采用的方法、预期创新点、1–3 篇建议 baseline 论文 ID。',
   '禁止提出已被失败方法库明确否定的做法；若你认为某条失败的条件已变，必须在该候选里说明理由。',
   '只输出结构化结果，不要输出自由文本。',
-].join(' ')
-
-/** 裁判角色 persona（§11.8）。 */
-export const JUDGE_PERSONA = [
-  '你是 cv-research 的 Idea Judge 子代理：只做**撞车判定**，不给总分。',
-  '你会收到一条候选 idea 与一批证据（三库条目、失败方法库条目，可能还有外部检索结果）。',
-  '对**每一条**证据判定：collision（实质撞车——已有工作做过同一件事；或失败条件仍然成立）',
-  '或 superficial（只是表面相似——用词相近但任务/机制不同；或失败条件已变）。',
-  '必须给出理由，理由要引用具体条目 ID 与差异点。判定 collision 时尤其要克制：',
-  '只有当你确信"同一问题 + 同一方法"已被覆盖，才判 collision；只是主题相关一律 superficial。',
-  '另外给一个 0–100 的 feasibility（基于建议 baseline 的实验可行性）与一段总述理由。',
-  '不要给出四维分值，也不要计算总分——分值由系统从你的判定算出。',
 ].join(' ')
 
 function renderJson(_args: unknown, value: unknown) {
@@ -142,32 +126,6 @@ export function ideaOutputSchema() {
   }
 }
 
-/** 裁判判定的 outputSchema。 */
-export function judgeOutputSchema() {
-  return {
-    type: 'object',
-    additionalProperties: false,
-    properties: {
-      verdicts: {
-        type: 'array',
-        items: {
-          type: 'object',
-          additionalProperties: false,
-          properties: {
-            ref_id: { type: 'string' },
-            verdict: { type: 'string', enum: ['collision', 'superficial'] },
-            reason: { type: 'string' },
-          },
-          required: ['ref_id', 'verdict', 'reason'],
-        },
-      },
-      feasibility: { type: 'integer' },
-      rationale: { type: 'string' },
-    },
-    required: ['verdicts', 'feasibility', 'rationale'],
-  }
-}
-
 /** 宽松形状校验：把 Generator 的结构化结果收敛成 IdeaCandidate。 */
 export function coerceIdeas(value: unknown, lens: string, generatedBy: string): Omit<IdeaCandidate, 'idea_id'>[] {
   const list = (value as { ideas?: unknown })?.ideas
@@ -189,26 +147,6 @@ export function coerceIdeas(value: unknown, lens: string, generatedBy: string): 
     })
   }
   return out
-}
-
-/** 宽松形状校验：裁判判定。 */
-export function coerceVerdicts(value: unknown): { verdicts: { ref_id: string; verdict: 'collision' | 'superficial'; reason: string }[]; feasibility?: number; rationale: string } {
-  const record = (value ?? {}) as Record<string, unknown>
-  const raw = Array.isArray(record.verdicts) ? record.verdicts : []
-  const verdicts = raw
-    .map((item) => {
-      const entry = item as Record<string, unknown>
-      const refId = typeof entry.ref_id === 'string' ? entry.ref_id : ''
-      const verdict = entry.verdict === 'collision' ? 'collision' as const : entry.verdict === 'superficial' ? 'superficial' as const : undefined
-      if (refId === '' || verdict === undefined) return undefined
-      return { ref_id: refId, verdict, reason: typeof entry.reason === 'string' ? entry.reason : '' }
-    })
-    .filter((item): item is { ref_id: string; verdict: 'collision' | 'superficial'; reason: string } => item !== undefined)
-  return {
-    verdicts,
-    ...(typeof record.feasibility === 'number' ? { feasibility: record.feasibility } : {}),
-    rationale: typeof record.rationale === 'string' ? record.rationale : '',
-  }
 }
 
 export function apply(ctx: Context): void {
@@ -371,15 +309,31 @@ export function apply(ctx: Context): void {
   toolsRuntime.register(defineTool({
     name: IDEA_TOOLS.score,
     description:
-      '给一条候选 idea 打分（确定性召回 + LLM 裁判 + 确定性聚合）。'
-      + '先把 idea 与三库/失败库比对（确定性），若相似度落在边界带则返回 status=needs_external_evidence，'
+      '给一条候选 idea 打分（确定性召回 + 三专家面板 + 确定性聚合）。'
+      + '先把 idea 与三库/失败库比对（确定性、三轴召回、不给相似度数字），若相似度落在边界带则返回 status=needs_external_evidence，'
       + '由你（主 Agent）用 mcp__asta__* 检索后带 external_evidence 再次调用；'
-      + '随后委派裁判子代理逐条判定撞车，分数由系统从判定与证据算出，报告自包含可复算。',
+      + '随后并行委派三位专家（方法/评测/领域）各自判**模块级对齐**并给四维分，分歧触发一轮讨论，'
+      + '最终分数由系统中位数聚合，报告自包含可复算。',
     parameters: {
       statement: { type: 'string', required: true, description: 'idea 一句话陈述' },
       problem: { type: 'string', required: true, description: '问题侧描述（用于问题库检索）' },
       method: { type: 'string', required: true, description: '方法侧描述（用于方法库检索）' },
       innovation: { type: 'string', description: '预期创新点' },
+      method_modules: {
+        type: 'array',
+        description: 'idea 的方法模块（整合设计 §6.2）：专家按模块判对齐；缺省由 problem/method 合成一个模块',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            name: { type: 'string', required: true },
+            role: { type: 'string', required: true },
+            description: { type: 'string', required: true },
+            kind: { type: 'string', required: true, description: 'module / loss / protocol / dataset / other' },
+            expected_advantage: { type: 'string' },
+          },
+        },
+      },
       baselines: { type: 'array', items: { type: 'string' }, description: '建议 baseline 论文 ID' },
       idea_id: { type: 'string', description: '候选 ID（generate 给出的 IDEA-n）；缺省按 statement 生成' },
       external_evidence: {
@@ -398,11 +352,45 @@ export function apply(ctx: Context): void {
           pack_frozen: { type: 'boolean', required: true, description: '权重是否来自**已冻结**的 pack' },
           retrieval_mode: { type: 'string', required: true },
           escalation_reason: { type: 'string', description: 'status=needs_external_evidence 时说明为何要外扩' },
-          judge_payload: { type: 'string', description: '交给裁判子代理的证据包（可直接作为委派 prompt）' },
+          panel_context: { type: 'string', description: '交给三专家面板的证据上下文（可直接作为委派 prompt）' },
           total: { type: 'integer' },
-          dimensions: { type: 'object', additionalProperties: true, description: '四维分值（由判定与证据算出）' },
+          dimensions: { type: 'object', additionalProperties: true, description: '四维分（三位专家中位数聚合）' },
           suggestion: { type: 'string' },
           risk_level: { type: 'string' },
+          module_alignment: {
+            type: 'array',
+            description: 'idea 模块级对齐结论（跨专家多数票）；dissent 是少数派意见',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                idea_module: { type: 'string', required: true },
+                status: { type: 'string', required: true, description: 'new / partial / known' },
+                dissent: { type: 'array', items: { type: 'string' }, required: true, description: '少数派意见（"专家=判定"）' },
+              },
+            },
+          },
+          experts: {
+            type: 'array',
+            description: '每位专家的四维分与理由（审计：看得出中位数从哪几个数来）',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                expert: { type: 'string', required: true },
+                novelty_problem: { type: 'integer', required: true },
+                novelty_method: { type: 'integer', required: true },
+                novelty_combo: { type: 'integer', required: true },
+                feasibility: { type: 'integer', required: true },
+                rationale: { type: 'string', required: true },
+              },
+            },
+          },
+          panel_notes: {
+            type: 'array',
+            items: { type: 'string' },
+            description: '面板自洽性问题：判定与分数矛盾（conflicts）、给了分却没引用（unsupported）、未收敛的分歧',
+          },
           escalated_external: { type: 'boolean', description: '本次是否用了外扩（Asta）证据；仅 status=scored 时有意义' },
           report_consistent: { type: 'boolean', description: '报告自洽性（总分可由权重快照复算）' },
           failure_blocked_by: { type: 'array', items: { type: 'string' }, description: '失败库中"条件仍成立"的条目 ID' },
@@ -412,10 +400,13 @@ export function apply(ctx: Context): void {
       render: renderJson,
     },
     async execute(args, exec) {
-      if (subagents === undefined) throw new Error('subagents 服务不可用：无法委派裁判子代理')
+      if (subagents === undefined) throw new Error('subagents 服务不可用：无法委派专家子代理')
       if (exec.agent === undefined) throw new Error('调用缺少 agent 上下文：无法建立委派父子关系')
 
-      const idea: IdeaCandidate = {
+      const modules = coerceIdeaModules(args.method_modules)
+      // `exactOptionalPropertyTypes` 下条件展开会把可选属性推成 `T | undefined`，所以先建
+      // 可变对象、再按需赋 `method_modules`（无模块时不写这个键，而不是写 undefined）。
+      const draft: { -readonly [K in keyof IdeaCandidate]: IdeaCandidate[K] } = {
         idea_id: args.idea_id === undefined ? `IDEA-${normalizeTitle(String(args.statement)).slice(0, 12) || 'adhoc'}` : String(args.idea_id),
         statement: String(args.statement),
         problem: String(args.problem),
@@ -423,8 +414,11 @@ export function apply(ctx: Context): void {
         innovation: args.innovation === undefined ? '' : String(args.innovation),
         baselines: (args.baselines ?? []).map(String),
       }
+      if (modules !== undefined) draft.method_modules = modules
+      const idea: IdeaCandidate = draft
 
       const packInfo = await ideaScore.packInfo()
+      const panelConfig = await ideaScore.panelConfig()
       const local = await ideaScore.retrieve(idea)
       const external = parseExternalEvidence(args.external_evidence)
       // 证据集合是**不可变**的（RetrievedEvidence 的字段是 readonly）：外扩证据用新数组合并，
@@ -445,6 +439,10 @@ export function apply(ctx: Context): void {
             ],
           }
       const derived = await ideaScore.derive(idea, evidence)
+      // 撞车报告只组装一次：证据卡与对齐任务既进 panel_context，也进最终报告。
+      // 外扩证据一并渲染进上下文——否则"去跑 Asta"这件事对专家不可见，外扩等于白做。
+      const collision = await ideaScore.collide(idea)
+      const context = renderCollisionContext(collision, idea, external)
 
       // 边界带命中且尚无外扩证据 → 交回主 Agent 去跑 Asta（工具不能自己调别的工具）
       if (derived.needs_external && external.length === 0) {
@@ -455,44 +453,24 @@ export function apply(ctx: Context): void {
           pack_frozen: packInfo.frozen,
           retrieval_mode: packInfo.retrieval_mode,
           escalation_reason: derived.external_reason,
-          judge_payload: ideaScore.buildJudgePayload({ idea, derived, evidence }),
+          panel_context: context,
         }
       }
 
-      const payload = ideaScore.buildJudgePayload({ idea, derived, evidence, external })
-      const run = await subagents.start('spawn', {
+      const panel = await runExpertPanel(subagents, {
+        ideaId: idea.idea_id,
+        context,
+        weights: panelConfig.weights,
+        bands: panelConfig.bands,
+        agent: exec.agent,
         signal: exec.signal,
-        parent: exec.agent,
-        label: `judge:${idea.idea_id}`,
-        prompt: [{ type: 'text', text: payload }],
-        toolFilter: JUDGE_TOOL_FILTER,
-        persona: JUDGE_PERSONA,
-        outputSchema: judgeOutputSchema(),
-        maxDepth: SUBAGENT_MAX_DEPTH,
       })
 
-      let judged
-      try {
-        const result = await run.result
-        if (result.structured === undefined) {
-          throw new Error(`裁判子代理未按契约应答（stopReason=${result.stopReason}${result.diagnostic ? `，${result.diagnostic}` : ''}）`)
-        }
-        judged = coerceVerdicts(result.structured)
-      } finally {
-        await run.dispose()
-      }
-
-      const report = await ideaScore.aggregate({
+      const report = await ideaScore.reportFromPanel({
         idea,
-        derived,
-        evidence,
-        judge: {
-          verdicts: judged.verdicts,
-          ...(judged.feasibility === undefined ? {} : { feasibility: judged.feasibility }),
-          rationale: judged.rationale,
-          judged_by: `judge:${idea.idea_id}`,
-          judged_at: new Date().toISOString(),
-        },
+        panel,
+        collision,
+        retrievalMode: packInfo.retrieval_mode,
         escalatedExternal: external.length > 0,
       })
       const consistency = ideaScore.verify(report)
@@ -507,6 +485,20 @@ export function apply(ctx: Context): void {
         dimensions: { ...report.dimensions },
         suggestion: report.suggestion,
         risk_level: report.risk_level,
+        module_alignment: (report.panel?.module_alignment ?? []).map((item) => ({
+          idea_module: item.idea_module,
+          status: item.status,
+          dissent: item.dissent.map((entry) => `${entry.expert}=${entry.status}`),
+        })),
+        experts: report.panel === undefined ? [] : report.panel.experts.map((verdict) => ({
+          expert: verdict.expert,
+          novelty_problem: verdict.dimension_scores.novelty_problem,
+          novelty_method: verdict.dimension_scores.novelty_method,
+          novelty_combo: verdict.dimension_scores.novelty_combo,
+          feasibility: verdict.dimension_scores.feasibility,
+          rationale: verdict.rationale,
+        })),
+        panel_notes: panelNotes(report.panel),
         escalated_external: report.escalated_external ?? false,
         report_consistent: consistency.consistent,
         failure_blocked_by: [...(report.failure_review?.blocked_by ?? [])],
@@ -520,6 +512,56 @@ function options(subDomain: unknown): string {
   return subDomain === undefined || String(subDomain).trim() === ''
     ? ''
     : `【项目细分领域】${String(subDomain)}`
+}
+
+const MODULE_KINDS: readonly MethodModuleKind[] = ['module', 'loss', 'protocol', 'dataset', 'other']
+
+/**
+ * 入参里的 idea 模块 → `MethodModule[]`。
+ *
+ * idea 的模块是**打分单元**（§6.2 "方法以模块为对齐单位"）：没有模块，三位专家就只能
+ * 对整段方法描述给一个笼统印象分，模块级对齐与"哪一块撞了"都无从谈起。
+ *
+ * 缺省合成一个模块（用 method 描述），而不是返回 `undefined`——专家拿到的对齐任务里
+ * 必须有模块，否则 `module_verdicts` 会是空的，面板就退化成旧的"整条打分"。
+ */
+export function coerceIdeaModules(raw: unknown): IdeaModule[] | undefined {
+  if (!Array.isArray(raw) || raw.length === 0) return undefined
+  const modules: IdeaModule[] = []
+  for (const item of raw) {
+    if (typeof item !== 'object' || item === null) continue
+    const entry = item as Record<string, unknown>
+    const moduleName = typeof entry.name === 'string' ? entry.name.trim() : ''
+    if (moduleName === '') continue
+    const kind = MODULE_KINDS.find((candidate) => candidate === entry.kind)
+    modules.push({
+      name: moduleName,
+      role: typeof entry.role === 'string' ? entry.role : '',
+      description: typeof entry.description === 'string' ? entry.description : '',
+      kind: kind ?? 'module',
+      // `IdeaModule.expected_advantage` 是必填（专家要靠它判"预期优势是否已有"）：缺省空串
+      expected_advantage: typeof entry.expected_advantage === 'string' ? entry.expected_advantage : '',
+    })
+  }
+  return modules.length === 0 ? undefined : modules
+}
+
+/**
+ * 面板自洽性问题（工具层直接汇报）。
+ *
+ * 三类都要报给主 Agent，而不是让它们悄悄留在报告里：
+ * `conflicts`（判了 known 却给高分）、`unsupported`（给了判定却没引用）、
+ * 未收敛的分歧——这三类正是"分数看起来没问题但其实不可信"的来源。
+ */
+export function panelNotes(panel: PanelAudit | undefined): string[] {
+  if (panel === undefined) return []
+  const notes: string[] = [...panel.conflicts, ...panel.unsupported]
+  for (const disagreement of panel.remaining) {
+    const where = disagreement.target.replace(/^(dimension|module):/, '')
+    notes.push(`未收敛的分歧（${disagreement.kind === 'dimension' ? '维度' : '模块'} ${where}）：${disagreement.positions.map((position) => `${position.expert}=${position.value}`).join('，')}`)
+  }
+  for (const failure of panel.failed) notes.push(`专家 ${failure.expert} 未参与最终聚合：${failure.error}`)
+  return notes
 }
 
 function parseExternalEvidence(raw: unknown): { ref_id: string; statement: string; similarity?: number }[] {

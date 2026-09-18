@@ -253,9 +253,14 @@ export function collide(
  *
  * @param report - 撞车报告。
  * @param idea - 原 idea（渲染方法模块用）。
+ * @param external - 外扩检索（Asta）回传的证据；**必须带给专家**，否则"外扩"白做。
  * @returns 一段可直接作为 prompt 的文本。
  */
-export function renderCollisionContext(report: CollisionReport, idea: IdeaCandidate): string {
+export function renderCollisionContext(
+  report: CollisionReport,
+  idea: IdeaCandidate,
+  external: readonly { ref_id: string; statement: string; similarity?: number }[] = [],
+): string {
   const lines: string[] = []
   lines.push('[候选 idea]')
   if (idea.title !== undefined) lines.push(`标题：${idea.title}`)
@@ -310,6 +315,16 @@ export function renderCollisionContext(report: CollisionReport, idea: IdeaCandid
     for (const candidate of task.candidates.slice(0, 5)) {
       lines.push(`   - ${candidate.module_id}「${candidate.module_name}」${candidate.paper_ids.length > 0 ? `（论文 ${candidate.paper_ids.join('、')}）` : ''}`)
       lines.push(`     ${candidate.statement}`)
+    }
+  }
+
+  // 外扩证据放在最后，并**明确标注来源不同**：库内证据是"我们自己归纳过的"，
+  // 外扩证据只有题名/摘要要点，颗粒度不同——不标注的话专家会以为它和库内条目等价。
+  if (external.length > 0) {
+    lines.push('')
+    lines.push(`[外扩检索证据 ${external.length} 条]（来自外部检索，非本地库；只有题名/摘要要点）`)
+    for (const item of external) {
+      lines.push(`- ${item.ref_id}：${item.statement}`)
     }
   }
   return lines.join('\n')
