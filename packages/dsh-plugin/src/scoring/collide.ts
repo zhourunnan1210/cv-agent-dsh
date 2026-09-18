@@ -42,8 +42,6 @@ export interface ModuleHit {
   readonly statement: string
   /** 用了该模块的论文。 */
   readonly paper_ids: readonly string[]
-  /** 该模块与 idea 模块的字符相似度——**仅用于排序**，不作为判据（§5.4）。 */
-  readonly rank_score: number
 }
 
 /** 一篇候选论文的证据卡（进专家上下文的单位）。 */
@@ -127,21 +125,12 @@ export interface CollideKbPort {
 }
 
 /**
- * 依赖注入的相似度（§5.4：**只影响顺序**，不参与判定与打分）。
- *
- * 默认实现是 core 的 `lexicalSimilarity`（字符 trigram 的 Jaccard）。做成参数而不是
- * 直接 import，是为了让 `collide()` 不把"怎么算像"这件事硬编码进去。
- *
- * **语义相似度这条路已实测否决**（2026-09-18，见整合设计 §9.3）：本地 embedding 在
- * 真实库上正负例分布重叠（负例 max 0.732 > 正例 max 0.713），阈值定不出来，
- * 排序也不如字面。相关代码与依赖已删除，不留"以后再说"的接口。
- */
-export type RankSimilarity = (a: string, b: string) => number
-
-/**
  * 粗筛给出的候选（`screen.ts` 的产物，已回库校验）。
  *
- * 有它就**不走关键词召回**：候选集合由 LLM 读过全库后决定。
+ * **给了它就一律走 LLM 粗筛**，哪怕它一条候选都没挑出来——
+ * "库里没有相关条目"是一个**合法答案**，不是失败。这两件事必须分清：
+ * - 粗筛回答"没有" → 证据卡为空，如实报，**不要**用关键词去捞（那等于用检索覆盖 LLM 的判断）；
+ * - 粗筛没跑成 → `screened` 不传，退回关键词召回（`recall_mode: 'keyword'`）。
  */
 export interface ScreenedRecall {
   readonly problems: readonly { readonly entry_id: string; readonly statement: string }[]
@@ -158,26 +147,27 @@ export interface ScreenedRecall {
 /**
  * 跑一次撞车分析（**确定性**，不调 LLM——粗筛的 LLM 调用在 `screen.ts`，结果作为入参进来）。
  *
- * 候选论文有两条来路，`screened` 给了就走第一条：
- * 1. **粗筛**（`llm_screen`）：子代理读过「问题库 + 模块清单」全文后挑的条目，
- *    本函数只负责把条目展开成论文。库小到能整读时，这比关键词可靠——
- *    关键词会把"用词不同但意思相同"的论文主动扔掉。
- * 2. **关键词兜底**（`keyword`）：三轴 FTS5 召回。粗筛失败时用，语义上更弱，报告里如实标。
+ * 候选论文有两条来路：
+ * 1. **粗筛**（`recall_mode: 'llm_screen'`）：子代理读过「问题库 + 模块清单」全文后挑的条目，
+ *    本函数只把条目展开成论文。库小到能整读时，这比关键词可靠——关键词会把
+ *    "用词不同但意思相同"的论文主动扔掉。**它挑不出东西也是合法答案。**
+ * 2. **关键词兜底**（`recall_mode: 'keyword'`）：三轴 FTS5 召回。只在粗筛没跑成时用，
+ *    语义上更弱，报告里如实标。
+ *
+ * **这里没有任何文本相似度**：候选排序用粗筛给的顺序（或 FTS 排名），
+ * 不再算"字符重合度"这种东西——它在撞车这件事上没有语义（§5.4、§9.1）。
  *
  * @param idea - 结构化 idea（模块化是前提——没有模块就只能退回"整体像不像"）。
  * @param kb - 知识库读接口。
- * @param similarity - 只用于**排序**的相似度函数（不参与判定与打分，见 §5.4）。
- * @param screened - 粗筛结果；缺省或为空则走关键词召回。
+ * @param screened - 粗筛结果；不传则走关键词召回。
  * @returns 撞车报告；`evidence_cards` 是给专家的材料，`alignment_tasks` 是对齐任务。
  */
 export function collide(
   idea: IdeaCandidate,
   kb: CollideKbPort,
-  similarity: RankSimilarity,
   screened?: ScreenedRecall,
 ): CollisionReport {
   const useScreen = screened !== undefined
-    && (screened.problems.length > 0 || screened.modules.length > 0)
   const recallMode: CollisionReport['recall_mode'] = useScreen ? 'llm_screen' : 'keyword'
 
   const rankOf = new Map<string, { problem?: number; module?: number; method?: number }>()
@@ -241,8 +231,6 @@ export function collide(
         module_name: record.name,
         statement: record.statement.slice(0, 200),
         paper_ids: paperIds,
-        // 只用于排序（§5.4）：它表示"这条候选在模块轴上排第几"，不参与判定与打分
-        rank_score: similarity(query, `${record.name} ${record.statement}`),
       }
     })
     moduleHits.push(...candidates)

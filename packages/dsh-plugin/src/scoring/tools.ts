@@ -27,7 +27,7 @@ import { SUBAGENT_MAX_DEPTH } from '../subagent.js'
 import type { SubagentLike } from '../subagent.js'
 import { renderCollisionContext, type CollisionReport } from './collide.js'
 import { runExpertPanel } from './panel.js'
-import { screenCandidates } from './screen.js'
+import { screenCandidates, type ScreeningResult } from './screen.js'
 
 export const name = 'cvagent-idea-tools'
 export const inject = ['ideaScore', 'kb', 'tools']
@@ -310,11 +310,13 @@ export function apply(ctx: Context): void {
   toolsRuntime.register(defineTool({
     name: IDEA_TOOLS.score,
     description:
-      '给一条候选 idea 打分（确定性召回 + 三专家面板 + 确定性聚合）。'
-      + '先把 idea 与三库/失败库比对（确定性、三轴召回、不给相似度数字），若相似度落在边界带则返回 status=needs_external_evidence，'
+      '给一条候选 idea 打分（子代理读全库粗筛 + 三专家面板 + 确定性聚合）。'
+      + '先派一个子代理读「问题库 + 模块清单」全文，挑出可能相关的条目并判断**本地库够不够判断**；'
+      + '若它说不够，返回 status=needs_external_evidence（附可执行的检索建议词），'
       + '由你（主 Agent）用 mcp__asta__* 检索后带 external_evidence 再次调用；'
       + '随后并行委派三位专家（方法/评测/领域）各自判**模块级对齐**并给四维分，分歧触发一轮讨论，'
-      + '最终分数由系统中位数聚合，报告自包含可复算。',
+      + '最终分数由系统中位数聚合，报告自包含可复算。'
+      + '注意：本工具**不使用文本相似度**做任何判断。',
     parameters: {
       statement: { type: 'string', required: true, description: 'idea 一句话陈述' },
       problem: { type: 'string', required: true, description: '问题侧描述（用于问题库检索）' },
@@ -458,37 +460,25 @@ export function apply(ctx: Context): void {
 
       // ── 外扩闸门：要不要花钱去外面的学术库查一圈 ──────────────────────────
       //
-      // 优先用粗筛子代理的判断——它读过全库，是这条链路上唯一有资格回答"库够不够"的东西。
-      // 旧的关键词边界带判据（`derive()` 的 [0.10, 0.30)）降级为**兜底**：粗筛失败、
-      // 或者模型没回答这个问题时用它。能力不丢，但不再让一个没有语义的数字当主判据。
+      // **只有 LLM 一条路**：粗筛子代理读过整个清单，是这条链路上唯一有资格回答
+      // "库够不够"的东西。旧的关键词边界带判据（`[0.10, 0.30)`）已于 2026-09-18
+      // 按用户裁定**删除**——同义改写的字符相似度只有 0.0039，落在 0.10 以下，
+      // 按旧规则不触发外扩：最该去外面查的那种情况恰恰不查。
       //
-      // 为什么必须换掉旧判据：同义改写的字符相似度只有 0.0039，**落在 0.10 以下**，
-      // 按旧规则不触发外扩——最该去外面查的那种情况恰恰不查。
-      let gate: { source: 'llm' | 'keyword'; needsExternal: boolean; reason: string; queries: readonly string[] }
-      if (!screenFailed && screening.coverage.verdict !== 'unknown') {
-        gate = {
-          source: 'llm',
-          needsExternal: screening.coverage.verdict === 'insufficient',
-          reason: screening.coverage.reason,
-          queries: screening.coverage.suggested_queries,
-        }
-      } else {
-        const why = screenFailed
-          ? `粗筛未成功（${screening.error}）`
-          : '粗筛未回答"本地库够不够"'
-        const local = await ideaScore.retrieve(idea)
-        const derived = await ideaScore.derive(idea, mergeEvidence(local, external))
-        gate = {
-          source: 'keyword',
-          needsExternal: derived.needs_external,
-          reason: derived.external_reason === '' ? '' : `${why}，已退回关键词判据：${derived.external_reason}`,
-          queries: [],
-        }
-      }
+      // 拿不到判断时**不替模型猜**（见 `external_gate: 'unavailable'` 的三种具体场景）：
+      // 仍然打分，但在 `recall_notes` 里把"这次没做成外扩判断"如实说出来，
+      // 主 Agent 可以自行决定要不要带 `external_evidence` 重调。
+      const gate = !screenFailed && screening.coverage.verdict !== 'unknown'
+        ? {
+            source: 'llm' as const,
+            needsExternal: screening.coverage.verdict === 'insufficient',
+            reason: screening.coverage.reason,
+            queries: screening.coverage.suggested_queries,
+          }
+        : { source: 'unavailable' as const, needsExternal: false, reason: '', queries: [] as readonly string[] }
 
       // 需要外扩且还没有外扩证据 → 交回主 Agent 去跑 Asta（工具不能自己调别的工具）
       if (gate.needsExternal && external.length === 0) {
-        // 预览用粗筛的真实候选（粗筛失败时退回关键词，报告里如实标）
         const preview = await ideaScore.collide(idea, screenFailed ? undefined : screening)
         return {
           status: 'needs_external_evidence',
@@ -497,7 +487,7 @@ export function apply(ctx: Context): void {
           pack_frozen: packInfo.frozen,
           retrieval_mode: packInfo.retrieval_mode,
           recall_mode: preview.recall_mode,
-          recall_notes: recallNotes(preview, screenFailed ? screening.error : undefined),
+          recall_notes: recallNotes(preview, screenFailed ? screening.error : undefined, screenFailed ? undefined : screening),
           external_gate: gate.source,
           escalation_reason: gate.reason === '' ? '本地库判据不充分，建议外扩检索' : gate.reason,
           suggested_queries: [...gate.queries],
@@ -551,7 +541,7 @@ export function apply(ctx: Context): void {
         })),
         panel_notes: panelNotes(report.panel),
         recall_mode: collision.recall_mode,
-        recall_notes: recallNotes(collision, screenFailed ? screening.error : undefined),
+        recall_notes: recallNotes(collision, screenFailed ? screening.error : undefined, screenFailed ? undefined : screening),
         external_gate: gate.source,
         escalated_external: report.escalated_external ?? false,
         report_consistent: consistency.consistent,
@@ -563,40 +553,20 @@ export function apply(ctx: Context): void {
 }
 
 /**
- * 把外扩证据并进本地证据集合。
- *
- * 证据集合是**不可变**的（`RetrievedEvidence` 的字段是 readonly）：外扩证据用新数组
- * 合并，而不是往既有数组里 push——否则同一份证据对象会被两次打分共享并互相污染。
- */
-function mergeEvidence(
-  local: Awaited<ReturnType<IdeaScoreService['retrieve']>>,
-  external: readonly { ref_id: string; statement: string; similarity?: number }[],
-): Awaited<ReturnType<IdeaScoreService['retrieve']>> {
-  if (external.length === 0) return local
-  return {
-    ...local,
-    hits: [
-      ...local.hits,
-      ...external.map((item) => ({
-        ref_id: item.ref_id,
-        source: 'papers' as const,
-        statement: item.statement,
-        ...(item.similarity === undefined ? {} : { backend_score: item.similarity }),
-        external: true,
-      })),
-    ],
-  }
-}
-
-/**
  * 粗筛的问题清单（工具层直接汇报）。
  *
- * 三类都要报给主 Agent，不能悄悄留在报告里：
+ * 五类都要报给主 Agent，不能悄悄留在报告里：
+ * - **粗筛没跑成**：退回关键词召回，结论强度下降；
  * - **模型编了编号**：它报了库里没有的条目——这是"模型在编"的直接证据；
  * - **某个模块一条候选都没给**：可能是真新，也可能是它没看懂，要人分辨；
- * - **粗筛失败退回关键词**：结论强度随之下降，必须说。
+ * - **粗筛一条候选都没挑出来**：证据卡会是空的，此时"没有撞车"这个结论**没有本地依据**；
+ * - **没能做成外扩判断**：粗筛应答里缺 `local_coverage` 或取值非法。
  */
-export function recallNotes(report: CollisionReport, screenError: string | undefined): string[] {
+export function recallNotes(
+  report: CollisionReport,
+  screenError: string | undefined,
+  screening?: ScreeningResult,
+): string[] {
   const notes: string[] = []
   if (screenError !== undefined) {
     notes.push(`粗筛未成功（${screenError}），已退回关键词召回——换词同义的撞车可能被漏掉`)
@@ -606,6 +576,18 @@ export function recallNotes(report: CollisionReport, screenError: string | undef
   }
   for (const module of report.unmatched_idea_modules) {
     notes.push(`粗筛对模块「${module}」一条候选都没给——可能是真新，也可能是措辞差异导致它没认出来`)
+  }
+  if (report.recall_mode === 'llm_screen' && report.evidence_cards.length === 0) {
+    notes.push(
+      '粗筛认为本地库没有相关条目（证据卡为空）——本次"没有撞车"的结论**没有本地依据**，'
+      + '只反映"库里没有"，不反映"世界上没有"',
+    )
+  }
+  if (screening !== undefined && screening.coverage.verdict === 'unknown') {
+    notes.push(
+      '粗筛没有回答"本地库够不够"（应答里缺 local_coverage 或取值非法）→ 本次**没有做外扩判断**；'
+      + '如需外部检索，可带 external_evidence 重调',
+    )
   }
   return notes
 }

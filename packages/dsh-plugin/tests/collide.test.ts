@@ -18,7 +18,6 @@ import { join } from 'node:path'
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
 
-import { lexicalSimilarity } from '@cv-research/core'
 
 import { KbService } from '../lib/kb/service.js'
 import { collide, renderCollisionContext } from '../lib/scoring/collide.js'
@@ -100,7 +99,7 @@ describe('撞车链路（三轴召回 + 证据卡 + 模块级对齐）', () => {
     kb.upsertModule({ name: '频域一致性约束', statement: '约束频谱响应一致性', kinds: ['loss'], paper_id: '10.1/a' })
     kb.upsertModule({ name: '稀疏回放缓冲', statement: '稀疏回放特征', kinds: ['training_strategy'], paper_id: '10.1/a' })
 
-    const report = await collide(IDEA, kb, lexicalSimilarity)
+    const report = await collide(IDEA, kb)
     expect(report.idea_id).toBe('idea-1')
     expect(report.axes.problem_clusters.length).toBeGreaterThan(0)
     expect(report.axes.module_hits.length, 'idea 的两个模块都应产生候选召回记录').toBeGreaterThanOrEqual(1)
@@ -118,7 +117,7 @@ describe('撞车链路（三轴召回 + 证据卡 + 模块级对齐）', () => {
     seedPaper(kb, '10.1/a', { method: longMethod, limitations: [longLimitation] })
     kb.upsertEntry('problems', '跨数据集泛化不足', ['10.1/a'], {})
 
-    const report = await collide(IDEA, kb, lexicalSimilarity)
+    const report = await collide(IDEA, kb)
     const card = report.evidence_cards.find((item) => item.paper_id === '10.1/a')
     expect(card.extraction.method_summary).toBe(longMethod)
     expect(card.extraction.limitations[0]).toBe(longLimitation)
@@ -129,7 +128,7 @@ describe('撞车链路（三轴召回 + 证据卡 + 模块级对齐）', () => {
     seedPaper(kb, '10.1/a')
     kb.upsertModule({ name: '频域一致性约束', statement: '约束频谱响应一致性', kinds: ['loss'], paper_id: '10.1/a' })
 
-    const report = await collide(IDEA, kb, lexicalSimilarity)
+    const report = await collide(IDEA, kb)
     expect(report.alignment_tasks, '每个 idea 模块一个对齐任务').toHaveLength(2)
     const first = report.alignment_tasks[0]
     expect(first.idea_module.name).toBe('频域一致性约束')
@@ -140,7 +139,7 @@ describe('撞车链路（三轴召回 + 证据卡 + 模块级对齐）', () => {
 
   it('模块轴召回为空时也照样产出任务（"真新"与"措辞不同"要靠专家结合论文证据判断）', async () => {
     seedPaper(kb, '10.1/a')
-    const report = await collide(IDEA, kb, lexicalSimilarity)
+    const report = await collide(IDEA, kb)
     const task = report.alignment_tasks.find((item) => item.idea_module.name === '原型对齐模块')
     expect(task, '即使库里没有对应模块，任务也要在').toBeDefined()
     expect(task.candidates).toEqual([])
@@ -156,7 +155,7 @@ describe('撞车链路（三轴召回 + 证据卡 + 模块级对齐）', () => {
     kb.upsertEntry('problems', '跨数据集泛化不足', ['10.1/a', '10.1/b'], {})
     kb.upsertEntry('methods', '频域一致性约束 + 稀疏回放缓冲', ['10.1/a'], {})
 
-    const report = await collide(IDEA, kb, lexicalSimilarity)
+    const report = await collide(IDEA, kb)
     // a 同时被问题轴与做法轴命中，应排在 b（只被问题轴命中）之前
     expect(report.candidates[0]).toBe('10.1/a')
   })
@@ -166,7 +165,7 @@ describe('撞车链路（三轴召回 + 证据卡 + 模块级对齐）', () => {
     kb.upsertEntry('problems', '跨数据集泛化不足', ['10.1/a'], {})
     kb.upsertModule({ name: '频域一致性约束', statement: '约束频谱响应一致性', kinds: ['loss'], paper_id: '10.1/a' })
 
-    const report = await collide(IDEA, kb, lexicalSimilarity)
+    const report = await collide(IDEA, kb)
     const context = renderCollisionContext(report, IDEA)
 
     expect(context).not.toMatch(/sim\s*=/)
@@ -186,14 +185,14 @@ describe('撞车链路（三轴召回 + 证据卡 + 模块级对齐）', () => {
     })
     kb.upsertEntry('problems', '跨数据集泛化不足', ['10.1/c'], {})
 
-    const report = await collide(IDEA, kb, lexicalSimilarity)
+    const report = await collide(IDEA, kb)
     const card = report.evidence_cards.find((item) => item.paper_id === '10.1/c')
     expect(card.extraction).toBeUndefined()
     expect(renderCollisionContext(report, IDEA)).toContain('尚未提取')
   })
 
   it('没有任何候选时不崩：空轴、空卡片、空对齐任务', async () => {
-    const report = await collide(IDEA, kb, lexicalSimilarity)
+    const report = await collide(IDEA, kb)
     expect(report.candidates).toEqual([])
     expect(report.evidence_cards).toEqual([])
     expect(report.alignment_tasks).toHaveLength(2)
@@ -204,7 +203,7 @@ describe('撞车链路（三轴召回 + 证据卡 + 模块级对齐）', () => {
     seedPaper(kb, '10.1/a')
     kb.upsertEntry('problems', '跨数据集泛化不足', ['10.1/a'], {})
     const noModules = { ...IDEA, method_modules: [] }
-    const report = await collide(noModules, kb, lexicalSimilarity)
+    const report = await collide(noModules, kb)
     expect(report.alignment_tasks).toEqual([])
     expect(report.candidates).toContain('10.1/a')
   })

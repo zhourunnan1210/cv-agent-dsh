@@ -481,10 +481,7 @@ describe('Idea 族工具（真实 ToolRuntime + 假 subagents）', () => {
     expect(result.value.recall_notes.join('\n')).toMatch(/换词同义/)
   })
 
-  it('外扩闸门：粗筛判 sufficient 就不外扩——**新判据覆盖旧的关键词边界带**', async () => {
-    // 这条 idea 的问题与库里那条"相关但不同文"，字面相似度落在旧边界带 [0.10, 0.30) 里，
-    // 按旧判据**一定触发外扩**（下面 B 组验证了这一点）。A 组要证明：粗筛一旦判 sufficient，
-    // 旧判据就不再说话。
+  it('外扩闸门：拿到 LLM 判断 → 按它决定；`sufficient` 就不外扩', async () => {
     const ideaArgs = {
       idea_id: 'IDEA-G',
       statement: '跨数据集泛化下的增量检测',
@@ -492,9 +489,6 @@ describe('Idea 族工具（真实 ToolRuntime + 假 subagents）', () => {
       method: '增量学习回放',
       method_modules: [{ name: '频域分支', role: 'r', description: 'd', kind: 'module' }],
     }
-    const seedBoundary = (target) => target.kb.upsertEntry('problems', '增量深伪检测的灾难性遗忘与历史样本回放开销', ['10.1/e'], {})
-
-    // A：粗筛判 sufficient → 直接打分
     env = await makeEnv({
       screenReply: {
         structured: {
@@ -505,20 +499,65 @@ describe('Idea 族工具（真实 ToolRuntime + 假 subagents）', () => {
       },
       replies: [EXPERT_REPLY, EXPERT_REPLY, EXPERT_REPLY],
     })
-    seedBoundary(env)
     const scored = await env.execute(IDEA_TOOLS.score, ideaArgs)
-    expect(scored.value.status, '粗筛说够用就不该再去外面查').toBe('scored')
+    expect(scored.value.status).toBe('scored')
     expect(scored.value.external_gate).toBe('llm')
     expect(scored.value.escalated_external).toBe(false)
+  })
+
+  it('外扩闸门拿不到判断时：**三种具体场景**都仍然出分，但如实报 external_gate=unavailable', async () => {
+    const ideaArgs = {
+      idea_id: 'IDEA-U',
+      statement: '把频域分支接到 CLIP 适配器上',
+      problem: '跨数据集泛化不足：未见生成方法下性能下降',
+      method: 'CLIP 参数高效微调检测器',
+      method_modules: [{ name: '频域分支', role: 'r', description: 'd', kind: 'module' }],
+    }
+
+    // 场景 1：粗筛子代理没按契约应答（stopReason=error）→ 整个粗筛失败 → 退回关键词召回
+    env = await makeEnv({
+      screenReply: { structured: undefined, stopReason: 'error' },
+      replies: [EXPERT_REPLY, EXPERT_REPLY, EXPERT_REPLY],
+    })
+    const failed = await env.execute(IDEA_TOOLS.score, ideaArgs)
+    expect(failed.value.status, '拿不到判断不该拦着打分').toBe('scored')
+    expect(failed.value.external_gate).toBe('unavailable')
+    expect(failed.value.recall_mode).toBe('keyword')
+    expect(failed.value.recall_notes.join('\n')).toMatch(/粗筛未成功/)
     await env.cleanup()
     env = undefined
 
-    // B：同一条 idea，粗筛没回答这个问题 → 退回关键词判据 → 旧边界带触发外扩
-    env = await makeEnv({ replies: [] })
-    seedBoundary(env)
-    const escalated = await env.execute(IDEA_TOOLS.score, ideaArgs)
-    expect(escalated.value.status, '对照组：旧判据确实会外扩').toBe('needs_external_evidence')
-    expect(escalated.value.external_gate).toBe('keyword')
+    // 场景 2：应答合法，但**缺 local_coverage 字段**（模型漏答那个问题）
+    env = await makeEnv({
+      screenReply: {
+        structured: { matched_problems: [{ entry_id: 'P001', why: '相关' }], matched_modules: [] },
+        stopReason: 'completed',
+      },
+      replies: [EXPERT_REPLY, EXPERT_REPLY, EXPERT_REPLY],
+    })
+    const missing = await env.execute(IDEA_TOOLS.score, ideaArgs)
+    expect(missing.value.status).toBe('scored')
+    expect(missing.value.external_gate, '缺字段 ≠ 判 sufficient，要标成拿不到').toBe('unavailable')
+    expect(missing.value.recall_mode, '候选还在，不该因此退回关键词').toBe('llm_screen')
+    expect(missing.value.recall_notes.join('\n')).toMatch(/没有回答"本地库够不够"/)
+    await env.cleanup()
+    env = undefined
+
+    // 场景 3：verdict 取值非法（不在 enum 里）
+    env = await makeEnv({
+      screenReply: {
+        structured: {
+          matched_problems: [{ entry_id: 'P001', why: '相关' }], matched_modules: [],
+          local_coverage: { verdict: 'maybe', reason: '含糊其辞' },
+        },
+        stopReason: 'completed',
+      },
+      replies: [EXPERT_REPLY, EXPERT_REPLY, EXPERT_REPLY],
+    })
+    const invalid = await env.execute(IDEA_TOOLS.score, ideaArgs)
+    expect(invalid.value.status).toBe('scored')
+    expect(invalid.value.external_gate).toBe('unavailable')
+    expect(invalid.value.recall_notes.join('\n')).toMatch(/没有回答"本地库够不够"/)
   })
 
   it('外扩闸门：粗筛判 insufficient → 外扩，带 LLM 的理由与**可直接用的检索词**', async () => {

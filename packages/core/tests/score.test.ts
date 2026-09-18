@@ -114,8 +114,11 @@ describe('证据派生与检索基线分', () => {
     expect(derived.evidence.every((item) => item.verdict === 'unjudged')).toBe(true)
   })
 
-  it('边界带触发外扩：keyword 模式的带是实测校准的 [0.1, 0.3)', () => {
-    // 与库里问题「近乎同文」（trigram 相似度高）→ 直接判撞，不必外扩
+  it('基线分按"检索到的最高相似度"算——边界带判据已于 2026-09-18 删除', () => {
+    // 曾经这里断言"相似度落在 [0.1,0.3) → needs_external=true"。那个判据被删了：
+    // 同义改写的相似度只有 0.0039，落在 0.10 以下，**最该外扩的情况反而不触发**。
+    // 外扩判断现在由读过全库的粗筛子代理做（dsh-plugin/src/scoring/screen.ts）。
+    // 本函数现在只剩一件事：从命中算基线分。这个用例钉住的是那件事还成立。
     const same = deriveEvidence({
       problem: '跨数据集泛化与持续学习中的灾难性遗忘',
       method: 'x',
@@ -124,9 +127,9 @@ describe('证据派生与检索基线分', () => {
       retrievalMode: 'keyword_only',
     })
     expect(same.evidence[0].similarity).toBeCloseTo(1, 2)
-    expect(same.needs_external).toBe(false)
+    // 近乎同文 → 问题新颖度应该很低（相似度 1 → 100×(1−1) = 0）
+    expect(same.baselines.novelty_problem).toBe(0)
 
-    // 与库里条目「相关但措辞不同」（实测 0.1538，落进 [0.1,0.3)）→ 判据不足，建议外扩
     const borderline = deriveEvidence({
       problem: '持续学习中的灾难性遗忘问题',
       method: 'x',
@@ -134,20 +137,9 @@ describe('证据派生与检索基线分', () => {
       methodHits: [],
       retrievalMode: 'keyword_only',
     })
-    expect(borderline.evidence[0].similarity).toBeGreaterThanOrEqual(0.1)
-    expect(borderline.evidence[0].similarity).toBeLessThan(0.3)
-    expect(borderline.needs_external).toBe(true)
-    expect(borderline.external_reason).toMatch(/边界带/)
-
-    // 毫不相关 → 不触发外扩
-    const unrelated = deriveEvidence({
-      problem: '跨数据集泛化与持续学习中的灾难性遗忘问题',
-      method: 'x',
-      problemHits: [{ ref_id: 'P003', source: 'problems', statement: '音频水印嵌入与提取的鲁棒性' }],
-      methodHits: [],
-      retrievalMode: 'keyword_only',
-    })
-    expect(unrelated.needs_external).toBe(false)
+    // 相关但措辞不同：相似度低 → 基线分高（这正是同义改写会被误判成"新颖"的地方，
+    // 所以基线分**不参与最终打分**，只作为派生值留痕）
+    expect(borderline.baselines.novelty_problem).toBeGreaterThan(same.baselines.novelty_problem)
   })
 
   it('如实钉住 keyword 模式的致命盲区：同义改写相似度为 0 → 裁判不可省', () => {

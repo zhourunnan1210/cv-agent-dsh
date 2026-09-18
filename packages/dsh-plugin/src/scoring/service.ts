@@ -66,8 +66,6 @@ export interface Config {
   version?: string
   /** 每次检索每库取多少条候选（进证据包的上限）。 */
   topk?: number
-  /** 边界带：相似度落在此区间 → 建议外扩外部检索。缺省用 pack 的 keyword_only 配置。 */
-  boundaryBand?: readonly [number, number]
 }
 
 export const Config = Schema.object({
@@ -78,13 +76,12 @@ export const Config = Schema.object({
 })
 
 /** 解析配置默认值（E19：不带 config 的行，默认值必须显式落定）。 */
-export function resolveIdeaScoreConfig(config: Config | undefined): Required<Omit<Config, 'boundaryBand'>> & { boundaryBand?: readonly [number, number] } {
+export function resolveIdeaScoreConfig(config: Config | undefined): Required<Config> {
   return {
     packDir: config?.packDir ?? 'data/packs',
     packId: config?.packId ?? 'deepfake-detection',
     version: config?.version ?? '0.1',
     topk: config?.topk ?? 10,
-    ...(config?.boundaryBand === undefined ? {} : { boundaryBand: config.boundaryBand }),
   }
 }
 
@@ -235,7 +232,7 @@ export class IdeaScoreService extends Service {
    */
   async collide(idea: IdeaCandidate, screened?: ScreeningResult): Promise<CollisionReport> {
     const kb = this.ctx.kb as unknown as CollideKbPort
-    return collide(idea, kb, lexicalSimilarity, screened)
+    return collide(idea, kb, screened)
   }
 
   /**
@@ -269,10 +266,15 @@ export class IdeaScoreService extends Service {
     return { hits: [...problemHits, ...methodHits, ...comboHits], failure_hits: failureHits, retrieval_mode: 'keyword_only' }
   }
 
-  /** 证据派生（确定性）：基线分 + 是否建议外扩外部检索。 */
+  /**
+   * 证据派生（确定性）：只算**基线分与证据行**。
+   *
+   * ⚠️ 原来这里还带"边界带 → 建议外扩"的判据，2026-09-18 已按用户裁定删除
+   * （同义改写的相似度 0.0039 落在 0.10 以下，最该外扩的情况反而不触发）。
+   * 外扩判断现在由 `screen.ts` 的粗筛子代理做——它读过全库，是链路上唯一有资格
+   * 回答"库够不够"的东西。
+   */
   async derive(idea: Pick<IdeaCandidate, 'problem' | 'method'>, evidence: RetrievedEvidence) {
-    const pack = await this.loadPack()
-    const band = this.options.boundaryBand ?? pack.config.thresholds.keyword_only?.boundary_band
     const input: DeriveEvidenceInput = {
       problem: idea.problem,
       method: idea.method,
@@ -283,7 +285,6 @@ export class IdeaScoreService extends Service {
         ...evidence.failure_hits,
       ],
       retrievalMode: evidence.retrieval_mode,
-      ...(band === undefined ? {} : { boundaryBand: band }),
     }
     return deriveEvidence(input)
   }

@@ -139,13 +139,15 @@ describe('ideaScore 服务', () => {
     expect(evidence.failure_hits.every((hit) => hit.source === 'failures')).toBe(true)
   })
 
-  it('派生：与库中问题近乎同文 → 问题维度基线接近 0，且不必外扩（相似度超边界带）', async () => {
+  it('派生：与库中问题近乎同文 → 问题维度基线接近 0', async () => {
     env = await makeEnv({})
     const idea = { problem: '跨数据集泛化不足：未见生成方法下性能下降', method: 'CLIP 参数高效微调检测器' }
     const evidence = await env.service.retrieve({ ...idea, statement: 's' })
     const derived = await env.service.derive(idea, evidence)
     expect(derived.baselines.novelty_problem).toBeLessThanOrEqual(10)
-    expect(derived.needs_external).toBe(false)
+    // 这里曾经还断言 `derived.needs_external === false`（边界带判据）。该判据已于
+    // 2026-09-18 删除——基线分现在只作为派生值留痕，**不参与最终打分**，
+    // 外扩与否由读过全库的粗筛子代理判断（见 tests/idea-tools.test.ts 的三个场景用例）。
   })
 
   it('聚合：裁判判撞车 → 该维度封顶 20，总分与档位随之下降，报告自洽可复算', async () => {

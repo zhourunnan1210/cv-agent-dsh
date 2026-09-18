@@ -122,7 +122,6 @@ export interface DeriveEvidenceInput {
   /** 与问题侧/方法侧共同命中的论文（组合新颖度用）：共现的 paper_id → 陈述片段。 */
   readonly comboHits?: readonly HitInput[]
   readonly retrievalMode: ScoreRetrievalMode
-  readonly boundaryBand?: readonly [number, number]
 }
 
 /** 证据派生结果（确定性）。 */
@@ -130,10 +129,6 @@ export interface DerivedEvidence {
   readonly evidence: readonly CollisionEvidence[]
   /** 各维度的检索基线分（0–100，未含裁判调整）。 */
   readonly baselines: ScoringDimensions
-  /** 是否落在边界带内（→ 建议外扩外部检索）。 */
-  readonly needs_external: boolean
-  /** 触发外扩的原因说明（供报告与日志）。 */
-  readonly external_reason: string
 }
 
 /**
@@ -145,11 +140,15 @@ export interface DerivedEvidence {
  * - `novelty_combo`   = 100 × (1 − max(组合共现相似度))；无共现证据时给保守值 70
  *   （无证据 ≠ 新颖，不能给满分，否则"没人做过"会变成默认结论）
  * - `feasibility`     = 由裁判给；检索阶段只给中位默认值 60
+ *
+ * ⚠️ **这里曾经有一个"边界带"外扩判据**（相似度落在 `[0.10, 0.30)` → 建议去外部检索），
+ * 2026-09-18 按用户裁定**删除**。理由：同义改写的字符相似度只有 0.0039，落在 0.10 以下，
+ * 按旧规则不触发外扩——最该去外面查的那种情况恰恰不查。外扩判断改由读过全库的
+ * 粗筛子代理做（`dsh-plugin/src/scoring/screen.ts`），它同时能给出可执行的检索词。
+ *
+ * 本函数现在只负责**基线分与证据行**，不再对外扩与否发表意见。
  */
 export function deriveEvidence(input: DeriveEvidenceInput): DerivedEvidence {
-  // 边界带：keyword_only 用实测校准的 [0.10, 0.30)；vector 用 [0.70, 0.90)（余弦尺度）
-  const band = input.boundaryBand
-    ?? (input.retrievalMode === 'vector' ? [0.7, 0.9] as const : [0.1, 0.3] as const)
   const evidence: CollisionEvidence[] = []
 
   // 问题侧与方法侧各自用自己的查询串估计相似度：调用方若已给 backend_score 则直接用
@@ -170,16 +169,9 @@ export function deriveEvidence(input: DeriveEvidenceInput): DerivedEvidence {
     feasibility: 60,
   }
 
-  // 边界带：任一侧相似度落在 [lo, hi) 区间 → 检索结论不够确定，建议外扩
-  const nearThreshold = [problemMax, methodMax, comboMax].filter((value) => value >= band[0] && value < band[1])
-  const needsExternal = nearThreshold.length > 0
   return {
     evidence,
     baselines,
-    needs_external: needsExternal,
-    external_reason: needsExternal
-      ? `相似度 ${nearThreshold.map((value) => value.toFixed(2)).join('/')} 落在边界带 [${band[0]}, ${band[1]})，本地库判据不充分`
-      : '',
   }
 }
 
