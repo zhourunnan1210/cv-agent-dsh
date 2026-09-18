@@ -17,6 +17,7 @@ import { pathToFileURL } from 'node:url'
 
 import { KbService } from '../lib/kb/service.js'
 import { IdeaScoreService } from '../lib/scoring/service.js'
+import { probeModelCache } from '../lib/scoring/embedding.js'
 
 const DSH = 'C:/Users/Admin/AppData/Roaming/npm/node_modules/@deepseek-ai/dsh/node_modules/'
 function loadDsh(spec) {
@@ -56,9 +57,11 @@ async function makeEnv(options = {}) {
   const app = new cordis.Context()
   let kb
   let service
+  let coreCtx
   await app.plugin({
     name: 'core',
     apply(ctx) {
+      coreCtx = ctx
       kb = new KbService(ctx, { dbPath: join(dir, 'metadata.db') })
       service = new IdeaScoreService(ctx, { packDir, packId: 'test-pack', version: '0.1', topk: 5, embeddingCacheDir: join(dir, 'no-models') })
     },
@@ -77,6 +80,8 @@ async function makeEnv(options = {}) {
     service,
     kb,
     dir,
+    ctx: coreCtx,
+    packDir,
     async cleanup() {
       kb.close()
       await rm(dir, { recursive: true, force: true })
@@ -240,5 +245,39 @@ describe('ideaScore 服务', () => {
     })
     expect(withExternal).toContain('外扩检索证据')
     expect(withExternal).toContain('2345.67890')
+  })
+
+  it('语义排序默认关闭：模型就在缓存里也必须走字面（实测它不如字面，见 §9.3）', async () => {
+    env = await makeEnv({})
+    // 指到**仓库真实缓存**（不是临时空目录）：这条用例要证的正是
+    // "模型可用 ≠ 默认启用"——默认值是决策，不是探测结果
+    const cacheDir = join(process.cwd(), '..', '..', 'data', 'models')
+    // `ideaScore` 是 Service，同一个 ctx 只能注册一个 → 变体各自开子上下文
+    const variant = async (extra) => {
+      const sub = new cordis.Context()
+      let svc
+      await sub.plugin({
+        name: 'variant',
+        apply(ctx) {
+          svc = new IdeaScoreService(ctx, {
+            packDir: env.packDir, packId: 'test-pack', version: '0.1', embeddingCacheDir: cacheDir, ...extra,
+          })
+        },
+      })
+      return svc
+    }
+
+    const offline = await variant({})
+    expect((await offline.ranker()).mode, '默认必须是字面').toBe('lexical')
+    expect((await offline.packInfo()).rank_mode).toBe('lexical')
+
+    // 反向：显式开启且模型确实缓存 → 才变语义。没下模型就不验这一半（不是"通过"，是"没验"）
+    const probe = await probeModelCache(cacheDir)
+    if (!probe.ready) {
+      console.warn(`模型未缓存（缺 ${probe.missing.join('、')}），只验证了默认关闭这一半`)
+      return
+    }
+    const enabled = await variant({ embeddingEnabled: true })
+    expect((await enabled.ranker()).mode, '开启后模型在缓存里就必须是语义').toBe('semantic')
   })
 })

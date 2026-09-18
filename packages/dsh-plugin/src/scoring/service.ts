@@ -69,8 +69,15 @@ export interface Config {
   embeddingModel?: string
   /** embedding 精度：`q8`（112.8MB）或 `fp32`（448.5MB）。 */
   embeddingDtype?: 'q8' | 'fp32'
-  /** 显式关闭语义排序（用于对照实验或资源受限环境）。 */
-  embeddingDisabled?: boolean
+  /**
+   * 是否启用语义排序。**默认关闭**。
+   *
+   * 为什么默认关：实测（`scripts/calibrate-vector-thresholds.mjs`，modules 库 69 条）
+   * 语义排序在"共享论文"这个代理标注上**不如字面排序**——precision@1 24.6% vs 30.4%，
+   * recall@5 40.6% vs 63.8%。没有证据支持它更好，就不该是默认值（113MB + 每次编码的代价
+   * 也不该默认付）。开着它需要先拿出"名字不同但机制相同"的人工标注集来证明。
+   */
+  embeddingEnabled?: boolean
 }
 
 export const Config = Schema.object({
@@ -83,7 +90,7 @@ export const Config = Schema.object({
 /** 解析配置默认值（E19：不带 config 的行，默认值必须显式落定）。 */
 export function resolveIdeaScoreConfig(
   config: Config | undefined,
-): Required<Omit<Config, 'boundaryBand' | 'embeddingDisabled'>> & { boundaryBand?: readonly [number, number]; embeddingDisabled?: boolean } {
+): Required<Omit<Config, 'boundaryBand' | 'embeddingEnabled'>> & { boundaryBand?: readonly [number, number]; embeddingEnabled?: boolean } {
   return {
     packDir: config?.packDir ?? 'data/packs',
     packId: config?.packId ?? 'deepfake-detection',
@@ -93,7 +100,7 @@ export function resolveIdeaScoreConfig(
     embeddingModel: config?.embeddingModel ?? DEFAULT_EMBEDDING_MODEL,
     embeddingDtype: config?.embeddingDtype ?? 'q8',
     ...(config?.boundaryBand === undefined ? {} : { boundaryBand: config.boundaryBand }),
-    ...(config?.embeddingDisabled === undefined ? {} : { embeddingDisabled: config.embeddingDisabled }),
+    ...(config?.embeddingEnabled === undefined ? {} : { embeddingEnabled: config.embeddingEnabled }),
   }
 }
 
@@ -170,13 +177,10 @@ export class IdeaScoreService extends Service {
    * `retrieval_mode` 与 `rank_mode` 是**两件事**，必须分开报：
    * - `retrieval_mode` 说的是**召回与证据相似度**的口径。召回仍是 FTS5 关键词，
    *   证据相似度仍是字符 trigram → 所以它仍是 `keyword_only`（§9.3）。
-   *   改这个字段等于改 pack 阈值的适用范围，而 pack 是冻结件（`frozen_by`）。
-   * - `rank_mode` 说的是**候选排序**的口径。embedding 到位后模块轴用余弦 →
-   *   `semantic`。它只影响顺序（§5.4），不影响任何阈值。
-   *
-   * 把 embedding 接进来就顺手把 `retrieval_mode` 翻成 `vector`，是**过度声明**：
-   * pack 里 `high_risk_similarity: 0.85` 是给余弦定的口径，而 `keyword_only.*`
-   * 是给 trigram 定的；混着用会让风险分级失去依据。
+   *   实测（`calibrate-vector-thresholds.mjs`）：向量余弦在真实库上两类分布重叠
+   *   （modules 负例 max 0.732 > 正例 max 0.713），现有向量口径 `[0.7, 0.9)` 与
+   *   near-dup `0.85` 几乎不触发——**翻成 vector 是错的**，不是保守。
+   * - `rank_mode` 说的是**候选排序**的口径：语义排序需显式开启（默认字面）。
    */
   async packInfo(): Promise<{
     pack_id: string
@@ -240,7 +244,7 @@ export class IdeaScoreService extends Service {
   }
 
   /**
-   * 加载本地 embedding（§4b）；不可用时返回 `undefined`。
+   * 加载本地 embedding（§4b）；不可用或未启用时返回 `undefined`。
    *
    * 依赖 `optionalDependencies` 里的包与**已手工下载**的模型文件，两样都可能缺席，
    * 所以这里没有异常路径——只在上层如实把 `rank_mode` 标成 `lexical`。
@@ -251,7 +255,8 @@ export class IdeaScoreService extends Service {
       cacheDir: options.embeddingCacheDir,
       model: options.embeddingModel,
       dtype: options.embeddingDtype,
-      ...(options.embeddingDisabled === true ? { disabled: true } : {}),
+      // 默认关闭：实测语义排序不如字面排序（见 Config.embeddingEnabled 的说明）
+      ...(options.embeddingEnabled === true ? {} : { disabled: true }),
     })
   }
 
