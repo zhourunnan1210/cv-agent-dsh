@@ -403,6 +403,16 @@ export function apply(ctx: Context): void {
             items: { type: 'string' },
             description: '粗筛的问题：模型报了库里没有的编号、某些模块一条候选都没给、或粗筛失败退回了关键词',
           },
+          external_gate: {
+            type: 'string',
+            required: true,
+            description: '外扩闸门是谁做的判断：llm（粗筛子代理读全库后判的）/ keyword（旧的关键词边界带兜底）',
+          },
+          suggested_queries: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'status=needs_external_evidence 时的外部检索建议词（可直接拿去检索，中英文都有）',
+          },
           escalated_external: { type: 'boolean', description: '本次是否用了外扩（Asta）证据；仅 status=scored 时有意义' },
           report_consistent: { type: 'boolean', description: '报告自洽性（总分可由权重快照复算）' },
           failure_blocked_by: { type: 'array', items: { type: 'string' }, description: '失败库中"条件仍成立"的条目 ID' },
@@ -431,49 +441,12 @@ export function apply(ctx: Context): void {
 
       const packInfo = await ideaScore.packInfo()
       const panelConfig = await ideaScore.panelConfig()
-      const local = await ideaScore.retrieve(idea)
       const external = parseExternalEvidence(args.external_evidence)
-      // 证据集合是**不可变**的（RetrievedEvidence 的字段是 readonly）：外扩证据用新数组合并，
-      // 而不是往既有数组里 push——否则同一份证据对象会被两次打分共享并互相污染。
-      const evidence = external.length === 0
-        ? local
-        : {
-            ...local,
-            hits: [
-              ...local.hits,
-              ...external.map((item) => ({
-                ref_id: item.ref_id,
-                source: 'papers' as const,
-                statement: item.statement,
-                ...(item.similarity === undefined ? {} : { backend_score: item.similarity }),
-                external: true,
-              })),
-            ],
-          }
-      const derived = await ideaScore.derive(idea, evidence)
 
-      // 边界带命中且尚无外扩证据 → 交回主 Agent 去跑 Asta（工具不能自己调别的工具）。
-      // **放在粗筛之前**：这一步注定要重跑，先派一个粗筛子代理就是白花钱。
-      // 这里给的 `panel_context` 用关键词预览（不派子代理），并如实标 recall_mode。
-      if (derived.needs_external && external.length === 0) {
-        const preview = await ideaScore.collide(idea)
-        return {
-          status: 'needs_external_evidence',
-          idea_id: idea.idea_id,
-          pack_ref: `${packInfo.pack_id}@${packInfo.version}`,
-          pack_frozen: packInfo.frozen,
-          retrieval_mode: packInfo.retrieval_mode,
-          recall_mode: preview.recall_mode,
-          recall_notes: ['这是外扩前的关键词预览，粗筛尚未运行——正式打分时会走子代理读全库'],
-          escalation_reason: derived.external_reason,
-          panel_context: renderCollisionContext(preview, idea),
-        }
-      }
-
-      // ── 粗筛：让一个子代理读「问题库 + 模块清单」全文，挑出相关条目 ──────────
+      // ── 粗筛：让一个子代理读「问题库 + 模块清单」全文 ──────────────────────
+      // 两件事一起做：挑出相关条目、判断本地库够不够判断撞车。
       // 这是用户 2026-09-18 定的方向：库小到能整读（8493 字），就不该用关键词去猜——
       // 关键词会把"用词不同但意思相同"的论文主动扔掉，而那正是最该抓的撞车。
-      // 粗筛失败**不能拖垮整条链路**：退回关键词召回，并把 recall_mode 如实标出来。
       const screening = await screenCandidates(subagents, {
         ideaId: idea.idea_id,
         idea,
@@ -482,6 +455,56 @@ export function apply(ctx: Context): void {
         signal: exec.signal,
       })
       const screenFailed = 'error' in screening
+
+      // ── 外扩闸门：要不要花钱去外面的学术库查一圈 ──────────────────────────
+      //
+      // 优先用粗筛子代理的判断——它读过全库，是这条链路上唯一有资格回答"库够不够"的东西。
+      // 旧的关键词边界带判据（`derive()` 的 [0.10, 0.30)）降级为**兜底**：粗筛失败、
+      // 或者模型没回答这个问题时用它。能力不丢，但不再让一个没有语义的数字当主判据。
+      //
+      // 为什么必须换掉旧判据：同义改写的字符相似度只有 0.0039，**落在 0.10 以下**，
+      // 按旧规则不触发外扩——最该去外面查的那种情况恰恰不查。
+      let gate: { source: 'llm' | 'keyword'; needsExternal: boolean; reason: string; queries: readonly string[] }
+      if (!screenFailed && screening.coverage.verdict !== 'unknown') {
+        gate = {
+          source: 'llm',
+          needsExternal: screening.coverage.verdict === 'insufficient',
+          reason: screening.coverage.reason,
+          queries: screening.coverage.suggested_queries,
+        }
+      } else {
+        const why = screenFailed
+          ? `粗筛未成功（${screening.error}）`
+          : '粗筛未回答"本地库够不够"'
+        const local = await ideaScore.retrieve(idea)
+        const derived = await ideaScore.derive(idea, mergeEvidence(local, external))
+        gate = {
+          source: 'keyword',
+          needsExternal: derived.needs_external,
+          reason: derived.external_reason === '' ? '' : `${why}，已退回关键词判据：${derived.external_reason}`,
+          queries: [],
+        }
+      }
+
+      // 需要外扩且还没有外扩证据 → 交回主 Agent 去跑 Asta（工具不能自己调别的工具）
+      if (gate.needsExternal && external.length === 0) {
+        // 预览用粗筛的真实候选（粗筛失败时退回关键词，报告里如实标）
+        const preview = await ideaScore.collide(idea, screenFailed ? undefined : screening)
+        return {
+          status: 'needs_external_evidence',
+          idea_id: idea.idea_id,
+          pack_ref: `${packInfo.pack_id}@${packInfo.version}`,
+          pack_frozen: packInfo.frozen,
+          retrieval_mode: packInfo.retrieval_mode,
+          recall_mode: preview.recall_mode,
+          recall_notes: recallNotes(preview, screenFailed ? screening.error : undefined),
+          external_gate: gate.source,
+          escalation_reason: gate.reason === '' ? '本地库判据不充分，建议外扩检索' : gate.reason,
+          suggested_queries: [...gate.queries],
+          panel_context: renderCollisionContext(preview, idea),
+        }
+      }
+
       const collision = await ideaScore.collide(idea, screenFailed ? undefined : screening)
       const context = renderCollisionContext(collision, idea, external)
 
@@ -529,6 +552,7 @@ export function apply(ctx: Context): void {
         panel_notes: panelNotes(report.panel),
         recall_mode: collision.recall_mode,
         recall_notes: recallNotes(collision, screenFailed ? screening.error : undefined),
+        external_gate: gate.source,
         escalated_external: report.escalated_external ?? false,
         report_consistent: consistency.consistent,
         failure_blocked_by: [...(report.failure_review?.blocked_by ?? [])],
@@ -536,6 +560,32 @@ export function apply(ctx: Context): void {
       }
     },
   }))
+}
+
+/**
+ * 把外扩证据并进本地证据集合。
+ *
+ * 证据集合是**不可变**的（`RetrievedEvidence` 的字段是 readonly）：外扩证据用新数组
+ * 合并，而不是往既有数组里 push——否则同一份证据对象会被两次打分共享并互相污染。
+ */
+function mergeEvidence(
+  local: Awaited<ReturnType<IdeaScoreService['retrieve']>>,
+  external: readonly { ref_id: string; statement: string; similarity?: number }[],
+): Awaited<ReturnType<IdeaScoreService['retrieve']>> {
+  if (external.length === 0) return local
+  return {
+    ...local,
+    hits: [
+      ...local.hits,
+      ...external.map((item) => ({
+        ref_id: item.ref_id,
+        source: 'papers' as const,
+        statement: item.statement,
+        ...(item.similarity === undefined ? {} : { backend_score: item.similarity }),
+        external: true,
+      })),
+    ],
+  }
 }
 
 /**

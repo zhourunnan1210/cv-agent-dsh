@@ -53,17 +53,26 @@ export const SCREEN_TOOL_FILTER = { allow: ['read'] } as const
 
 /** 粗筛子代理的角色。 */
 export const SCREEN_PERSONA = [
-  '你是 cv-research 的撞车粗筛子代理：只做**一件事**——从给定的一份"问题清单 + 做法模块清单"里，',
-  '挑出与这条 idea 可能相关的条目。你不打分，也不下"是不是撞车"的结论。',
+  '你是 cv-research 的撞车粗筛子代理：做**两件事**——挑出可能相关的条目，并判断本地库够不够用。',
+  '你不打分，也不下"是不是撞车"的最终结论。',
   '',
-  '你要按**两个方向**找，两个方向同样重要：',
+  '## 第一件：挑条目',
+  '按**两个方向**找，两个方向同样重要：',
   '① **同一个问题**：清单里的问题条目，与这条 idea 要解决的问题是不是同一件事；',
   '② **同一个做法**：清单里的做法模块，与这条 idea 的某个模块是不是同一个机制。',
   '特别注意②：模块名不同不等于机制不同（"频域一致性约束"与"频率一致性正则"很可能是同一件事）；',
   '名字相同也可能用法不同。反过来也一样。',
+  '判断时**宁松勿紧**：漏掉一条的代价比多报一条高得多——但也不要整份清单全报，那等于没筛。',
   '',
-  '判断时**宁松勿紧**：你的输出会交给后续环节细看，漏掉一条的代价比多报一条高得多——',
-  '但也不要整份清单全报，那等于没筛。',
+  '## 第二件：判断本地库够不够',
+  '基于你刚读完的这份清单，回答：**这份清单足以支撑"有没有撞车"的判断吗？**',
+  '- `sufficient`：清单里有明确相关的工作，能看清别人做到哪一步了；',
+  '- `insufficient`：清单里找不到对应的工作。**注意这有两种可能**：',
+  '  这条 idea 确实是新的；或者**真正相关的工作根本不在这份清单里**（这个库只覆盖了一部分文献）。',
+  '  你无法区分这两种，所以这种情况要如实报 `insufficient`——让上层决定要不要去外部检索。',
+  '判 `insufficient` 时，给出 **2–4 组建议检索词**（中英文都要，用外部学术库能用的写法）。',
+  '这些检索词会被拿去外部检索，所以要具体：写"continual learning frequency constraint"',
+  '而不是写"相关方法"。',
   '',
   '只输出结构化结果，不要输出自由文本。',
 ].join('\n')
@@ -132,9 +141,40 @@ export function screenOutputSchema() {
         },
       },
       notes: { type: 'string', description: '可选：说明你为什么没选某些看起来相关的条目' },
+      local_coverage: {
+        type: 'object',
+        additionalProperties: false,
+        description: '本地库够不够判断撞车（见角色说明的第二件事）',
+        properties: {
+          verdict: {
+            type: 'string',
+            enum: ['sufficient', 'insufficient'],
+            description: 'sufficient=清单里有明确相关的工作；insufficient=找不到对应工作（可能是真新，也可能是库里没有）',
+          },
+          reason: { type: 'string', description: '为什么这么判（一句话）' },
+          suggested_queries: {
+            type: 'array',
+            items: { type: 'string' },
+            description: '判 insufficient 时给 2–4 组外部检索建议词（中英文），要具体到能直接拿去检索',
+          },
+        },
+        required: ['verdict', 'reason'],
+      },
     },
-    required: ['matched_problems', 'matched_modules'],
+    required: ['matched_problems', 'matched_modules', 'local_coverage'],
   }
+}
+
+/**
+ * 本地库够不够判断（外扩闸门）。
+ *
+ * `unknown` 是**模型没回答这个问题**时的取值——不是"够"，也不是"不够"。
+ * 上层据此退回旧的关键词边界带判据（见 `tools.ts`），而不是替模型猜一个答案。
+ */
+export interface LocalCoverage {
+  readonly verdict: 'sufficient' | 'insufficient' | 'unknown'
+  readonly reason: string
+  readonly suggested_queries: readonly string[]
 }
 
 /** 粗筛结果（已回库校验）。 */
@@ -157,6 +197,8 @@ export interface ScreeningResult {
   readonly prompt_chars: number
   /** idea 的模块里，LLM **一条候选都没给**的那些（真新 / 或它没看懂，两者要人去分辨）。 */
   readonly unmatched_idea_modules: readonly string[]
+  /** 外扩闸门：本地库够不够判断。模型没回答时是 `unknown`，上层退回关键词判据。 */
+  readonly coverage: LocalCoverage
 }
 
 /** 把「问题库 + 模块清单 + idea」渲染成粗筛 prompt。 */
@@ -198,8 +240,10 @@ export function renderScreenContext(
   lines.push('1. 从问题清单里挑出与这条 idea 的**问题**可能相关的条目（`matched_problems`）。')
   lines.push('2. 对这条 idea 的**每一个模块**，从做法模块清单里挑出机制可能相同的条目（`matched_modules`）。')
   lines.push('   每个 idea 模块都要在 `matched_modules` 里出现一次；确实找不到对应的就给空数组。')
-  lines.push('3. **只用上面清单里出现过的编号**，不要自己编编号。')
-  lines.push('不要下"是否撞车"的结论，那是后续环节的事。')
+  lines.push('3. 判断这份清单**够不够**支撑"有没有撞车"的判断（`local_coverage`）；')
+  lines.push('   判 `insufficient` 时给出 2–4 组具体的外部检索建议词。')
+  lines.push('4. **只用上面清单里出现过的编号**，不要自己编编号。')
+  lines.push('不要下"是否撞车"的最终结论，那是后续环节的事。')
   return lines.join('\n')
 }
 
@@ -207,6 +251,7 @@ export function renderScreenContext(
 export function coerceScreening(value: unknown): {
   matched_problems: { entry_id: string; why: string }[]
   matched_modules: { idea_module: string; library_modules: { module_id: string; why: string }[] }[]
+  coverage: LocalCoverage
 } {
   const record = (value ?? {}) as Record<string, unknown>
 
@@ -242,7 +287,24 @@ export function coerceScreening(value: unknown): {
     }
   }
 
-  return { matched_problems, matched_modules }
+  // 外扩闸门。**模型没回答就给 `unknown`**，而不是替它猜一个：
+  // 猜 sufficient 会静默跳过外部检索，猜 insufficient 会让每次格式偏差都多花一次外扩。
+  const coverageRaw = (typeof record.local_coverage === 'object' && record.local_coverage !== null
+    ? record.local_coverage
+    : undefined) as Record<string, unknown> | undefined
+  const verdictRaw = coverageRaw?.verdict
+  const verdict: LocalCoverage['verdict'] = verdictRaw === 'sufficient' || verdictRaw === 'insufficient'
+    ? verdictRaw
+    : 'unknown'
+  const coverage: LocalCoverage = {
+    verdict,
+    reason: typeof coverageRaw?.reason === 'string' ? coverageRaw.reason : '',
+    suggested_queries: Array.isArray(coverageRaw?.suggested_queries)
+      ? (coverageRaw.suggested_queries as unknown[]).map(String).filter((item) => item.trim() !== '')
+      : [],
+  }
+
+  return { matched_problems, matched_modules, coverage }
 }
 
 /**
@@ -311,6 +373,7 @@ export function resolveScreening(
     dropped,
     prompt_chars: promptChars,
     unmatched_idea_modules: unmatched,
+    coverage: raw.coverage,
   }
 }
 

@@ -4,9 +4,12 @@
  *
  * 用法：
  *   node scripts/batch-parse.mjs [--limit N] [--chunk C] [--dry-run] [--resume]
+ *   node scripts/batch-parse.mjs --list data/papers/<清单>.txt [--dry-run]
  *
  * - 默认处理全部合格论文（pdf_path 非空且 parse_channel 为空），按
  *   「有外部 ID 优先、年份新者优先」排序；
+ * - `--list <文件>`：只解析清单里列出的 paper_id（每行一个，# 开头为注释）。
+ *   用于「本批优先」——默认排序会把某次新检索的论文排到更老的全库队列之后。
  * - 每次提交一个 chunk（默认 20 个文件）的 file-urls/batch；**全部 chunk
  *   先提交**（MinerU 并发处理），再逐块轮询、下载解压、落库记账；
  *   提交过的 chunk 写 data/papers/batch-state.json，进程中断后
@@ -43,6 +46,12 @@ const limitN = Number(opt('--limit') ?? 0)
 const chunkSize = Number(opt('--chunk') ?? 20)
 const dryRun = flag('--dry-run')
 const resume = flag('--resume')
+/**
+ * `--list <file>`：只解析该文件里列出的 paper_id（每行一个）。
+ * 为什么需要：默认排序是「有外部 ID 优先、年份新者优先」，全库队列混排时，
+ * 某次检索新增的那批会被更早的老论文挤到后面。要做「本批优先」就点名提交。
+ */
+const listFile = opt('--list')
 /** 定向补收一个已提交的 batch（哪怕 state 里已标 done）：代理/网络故障后的补救入口。 */
 const resumeBatch = opt('--resume-batch')
 
@@ -88,7 +97,27 @@ const rows = database.raw
   .all()
 if (limitN > 0) rows.length = Math.min(rows.length, limitN)
 
-// ── 本地页数预算（pdf-parse，走 vendored 包依赖，不新增依赖）──────────────
+// `--list`：按清单点名（保持清单顺序，便于"本批优先"）
+if (listFile !== undefined) {
+  const wanted = (await readFile(listFile, 'utf8'))
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line !== '' && !line.startsWith('#'))
+  const wantedSet = new Set(wanted.map((id) => id.toLowerCase()))
+  const kept = rows.filter((row) => wantedSet.has(String(row.paper_id).toLowerCase()))
+  const missing = wanted.filter((id) => !kept.some((row) => String(row.paper_id).toLowerCase() === id.toLowerCase()))
+  console.log(`清单 ${wanted.length} 条 → 命中可解析 ${kept.length} 篇`)
+  if (missing.length > 0) {
+    console.log(`  ↷ 清单中 ${missing.length} 条不在可解析集合（已解析 / 无本地 PDF / 库里没有）：${missing.slice(0, 8).join(', ')}${missing.length > 8 ? ' …' : ''}`)
+  }
+  rows.length = 0
+  rows.push(...kept)
+  if (limitN > 0) rows.length = Math.min(rows.length, limitN)
+}
+
+// ⚠ 必须放在 `--list` 过滤**之后**：否则预算打印的是全库队列的数字，
+// 与"本轮实际提交几篇"对不上（2026-09-18 实测踩到：打印 96 篇预算、实际提交 30 篇）。
+// 本地页数预算（pdf-parse，走 vendored 包依赖，不新增依赖）──────────────
 const requireVendor = createRequire('D:/Code/VScodeRepo/dsh-plugin/packages/vendor/dsh-ai4scholar/package.json')
 const pdfParseEntry = requireVendor.resolve('pdf-parse')
 const { PDFParse } = await import(pathToFileURL(pdfParseEntry).href)

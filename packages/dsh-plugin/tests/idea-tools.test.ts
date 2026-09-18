@@ -481,6 +481,78 @@ describe('Idea 族工具（真实 ToolRuntime + 假 subagents）', () => {
     expect(result.value.recall_notes.join('\n')).toMatch(/换词同义/)
   })
 
+  it('外扩闸门：粗筛判 sufficient 就不外扩——**新判据覆盖旧的关键词边界带**', async () => {
+    // 这条 idea 的问题与库里那条"相关但不同文"，字面相似度落在旧边界带 [0.10, 0.30) 里，
+    // 按旧判据**一定触发外扩**（下面 B 组验证了这一点）。A 组要证明：粗筛一旦判 sufficient，
+    // 旧判据就不再说话。
+    const ideaArgs = {
+      idea_id: 'IDEA-G',
+      statement: '跨数据集泛化下的增量检测',
+      problem: '持续学习中的灾难性遗忘问题',
+      method: '增量学习回放',
+      method_modules: [{ name: '频域分支', role: 'r', description: 'd', kind: 'module' }],
+    }
+    const seedBoundary = (target) => target.kb.upsertEntry('problems', '增量深伪检测的灾难性遗忘与历史样本回放开销', ['10.1/e'], {})
+
+    // A：粗筛判 sufficient → 直接打分
+    env = await makeEnv({
+      screenReply: {
+        structured: {
+          matched_problems: [], matched_modules: [],
+          local_coverage: { verdict: 'sufficient', reason: '清单里已有持续学习方向的明确工作，能看清边界' },
+        },
+        stopReason: 'completed',
+      },
+      replies: [EXPERT_REPLY, EXPERT_REPLY, EXPERT_REPLY],
+    })
+    seedBoundary(env)
+    const scored = await env.execute(IDEA_TOOLS.score, ideaArgs)
+    expect(scored.value.status, '粗筛说够用就不该再去外面查').toBe('scored')
+    expect(scored.value.external_gate).toBe('llm')
+    expect(scored.value.escalated_external).toBe(false)
+    await env.cleanup()
+    env = undefined
+
+    // B：同一条 idea，粗筛没回答这个问题 → 退回关键词判据 → 旧边界带触发外扩
+    env = await makeEnv({ replies: [] })
+    seedBoundary(env)
+    const escalated = await env.execute(IDEA_TOOLS.score, ideaArgs)
+    expect(escalated.value.status, '对照组：旧判据确实会外扩').toBe('needs_external_evidence')
+    expect(escalated.value.external_gate).toBe('keyword')
+  })
+
+  it('外扩闸门：粗筛判 insufficient → 外扩，带 LLM 的理由与**可直接用的检索词**', async () => {
+    env = await makeEnv({
+      screenReply: {
+        structured: {
+          matched_problems: [{ entry_id: 'P001', why: '问题相关' }],
+          matched_modules: [{ idea_module: '频域分支', library_modules: [] }],
+          local_coverage: {
+            verdict: 'insufficient',
+            reason: '清单里没有任何把频域约束用于持续学习的工作，无法判断世界上有没有',
+            suggested_queries: ['continual learning frequency constraint', '频域约束 持续学习 灾难性遗忘'],
+          },
+        },
+        stopReason: 'completed',
+      },
+      replies: [],
+    })
+    const result = await env.execute(IDEA_TOOLS.score, {
+      idea_id: 'IDEA-I', statement: 's',
+      problem: '跨数据集泛化不足：未见生成方法下性能下降',
+      method: 'CLIP 参数高效微调检测器',
+      method_modules: [{ name: '频域分支', role: 'r', description: 'd', kind: 'module' }],
+    })
+    expect(result.value.status).toBe('needs_external_evidence')
+    expect(result.value.external_gate).toBe('llm')
+    // 理由用 LLM 自己说的，而不是"相似度 0.14 落在边界带"
+    expect(result.value.escalation_reason).toMatch(/没有任何把频域约束用于持续学习/)
+    expect(result.value.escalation_reason).not.toMatch(/边界带/)
+    // 检索词要能直接拿去用——这是外扩这一步白捡的收益
+    expect(result.value.suggested_queries).toContain('continual learning frequency constraint')
+    expect(result.value.suggested_queries).toHaveLength(2)
+  })
+
   it('score：部分专家失败 → 仍按存活专家聚合，但报告如实说明谁没参与', async () => {
     env = await makeEnv({
       replies: [

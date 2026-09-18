@@ -32,6 +32,8 @@ const opt = (name) => {
 const flag = (name) => args.includes(name)
 const limitN = Number(opt('--limit') ?? 0)
 const dryRun = flag('--dry-run')
+/** 强制重下：覆盖本地已有文件（用于修复"被截断的旧文件"，见 E34 体检结论）。 */
+const force = flag('--force')
 const onlyIds = args.reduce((acc, a, i) => (a === '--paper-id' && args[i + 1] ? [...acc, args[i + 1]] : acc), [])
 
 const PDF_DIR = resolve('data/papers/pdf')
@@ -48,16 +50,25 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms))
 }
 
-/** 本地已是合法 PDF（>20KB 且 %PDF 魔数）——幂等跳过，不重复下载。 */
+/** 本地已是合法 PDF（>20KB、%PDF 魔数、且有 %%EOF 结束标记）——幂等跳过，不重复下载。 */
 async function existingPdf(path) {
   try {
     const info = await stat(path)
     if (info.size < 20_000) return false
-    const head = await readFile(path).then((b) => b.subarray(0, 5).toString('latin1'))
-    return head.startsWith('%PDF')
+    const buf = await readFile(path)
+    if (!buf.subarray(0, 5).toString('latin1').startsWith('%PDF')) return false
+    // 只看开头不够：2026-09-17 那次抓到的一批文件正是"开头合法、尾部被截断"
+    // （体积精确落在 256KB 的整数倍上），只校验魔数会把坏文件当成功。
+    return hasEofMarker(buf)
   } catch {
     return false
   }
+}
+
+/** PDF 结束标记：截断检测的可靠判据（尾部 4KB 内应出现 %%EOF）。 */
+function hasEofMarker(buf) {
+  const tail = buf.subarray(Math.max(0, buf.length - 4096)).toString('latin1')
+  return tail.includes('%%EOF')
 }
 
 /**
@@ -113,8 +124,14 @@ async function fetchArxivPdf(arxivId) {
           errors.push(`${url} → 非 PDF（前 40 字节 ${JSON.stringify(bytes.subarray(0, 40).toString('latin1'))}）`)
           break
         }
+        // 完整性判据：中断、或缺少 %%EOF 结束标记，都视为未完成，必须重试。
+        // （只校验 %PDF 开头会让截断文件蒙混过关——这正是这批坏文件的来源。）
         if (interrupted !== undefined) {
           errors.push(`${url} → 中断（已收 ${total} 字节：${interrupted}）`)
+          continue // 重试同一地址
+        }
+        if (!hasEofMarker(bytes)) {
+          errors.push(`${url} → 缺少 %%EOF（${bytes.length} 字节，疑似截断）`)
           continue // 重试同一地址
         }
         return { bytes, url }
@@ -157,7 +174,7 @@ for (const [index, row] of queue.entries()) {
   const target = resolve(PDF_DIR, `${slug(arxivId)}.pdf`)
   const label = `[${index + 1}/${queue.length}] ${row.paper_id}`
 
-  if (await existingPdf(target)) {
+  if (!force && await existingPdf(target)) {
     database.raw.prepare("UPDATE papers SET pdf_path = ?, pdf_status = 'downloaded', updated_at = ? WHERE paper_id = ?")
       .run(target, now(), row.paper_id)
     skipped += 1
