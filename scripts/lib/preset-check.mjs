@@ -1,3 +1,4 @@
+import { resolveDshModules, resolveDshPackage } from './dsh-root.mjs'
 /**
  * 预设组合的静态检查（可被 CLI 与测试共用）。
  *
@@ -26,7 +27,7 @@ import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
 import { basename, dirname, join } from 'node:path'
 
-const DSH_ROOT = 'C:/Users/Admin/AppData/Roaming/npm/node_modules/@deepseek-ai/dsh'
+const DSH_ROOT = resolveDshPackage()
 
 /** 已知会发布 Cordis 服务的行：行名 → 服务名。新增服务行时必须在这里登记。 */
 export const SERVICE_ROWS = {

@@ -32,7 +32,8 @@ import {
 import { KbService } from '../lib/kb/service.js'
 import * as extractTool from '../lib/kb/extract-tool.js'
 
-const DSH = 'C:/Users/Admin/AppData/Roaming/npm/node_modules/@deepseek-ai/dsh/node_modules/'
+const { resolveDshModules } = await import(new URL('../../../scripts/lib/dsh-root.mjs', import.meta.url).href)
+const DSH = resolveDshModules()
 const require = createRequire(DSH + '@deepseek-ai/dsh-system-prompt/package.json')
 const systemPromptModule = await import(pathToFileURL(require.resolve('@deepseek-ai/dsh-system-prompt')).href)
 const cordis = await import(

@@ -1,3 +1,4 @@
+import { resolveDshModules, resolveDshPackage } from './lib/dsh-root.mjs'
 /**
  * 从现有 `innovations` 派生模块清单初值（整合设计 v1.0 §3.5 / §10 开放项 4）。
  *
@@ -18,7 +19,7 @@
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
 
-const DSH = 'C:/Users/Admin/AppData/Roaming/npm/node_modules/@deepseek-ai/dsh/node_modules/'
+const DSH = resolveDshModules()
 const require = createRequire(DSH + 'package.json')
 
 const { KbService } = await import(pathToFileURL('packages/dsh-plugin/lib/kb/service.js').href)

@@ -163,7 +163,8 @@ describe('MineruQuotaService（宿主行封装）', () => {
 
   it('服务行挂载后可记账，状态跨实例持久化', async () => {
     const { default: MineruQuotaService } = await import('../lib/kb/mineru-quota-service.js')
-    const DSH = 'C:/Users/Admin/AppData/Roaming/npm/node_modules/@deepseek-ai/dsh/node_modules/'
+    const { resolveDshModules } = await import(new URL('../../../scripts/lib/dsh-root.mjs', import.meta.url).href)
+const DSH = resolveDshModules()
     const { createRequire } = await import('node:module')
     const { pathToFileURL } = await import('node:url')
     const requireDsh = createRequire(DSH + '@deepseek-ai/cordis/package.json')

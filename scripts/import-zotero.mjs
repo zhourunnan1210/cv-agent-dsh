@@ -15,13 +15,20 @@
 import { copyFile, mkdir, readdir, rm } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { join, resolve, basename } from 'node:path'
+import { homedir } from 'node:os'
 import { DatabaseSync } from 'node:sqlite'
 
 import { normalizePaperId } from '../packages/core/lib/index.js'
 import { PaperDatabase } from '../packages/dsh-plugin/lib/kb/db.js'
 import { PaperLibrary } from '../packages/dsh-plugin/lib/kb/library.js'
 
-const ZOTERO_DIR = 'C:/Users/Admin/Zotero'
+/**
+ * Zotero 数据目录。**不要写死开发机路径**——用环境变量或默认位置。
+ *
+ * 默认位置按平台惯例：Windows `~/Zotero`（Zotero 的默认安装位置）、
+ * macOS/Linux `~/Zotero`。装在别处就设 `ZOTERO_DIR`。
+ */
+const ZOTERO_DIR = process.env.ZOTERO_DIR ?? join(homedir(), 'Zotero')
 const ZOTERO_DB = join(ZOTERO_DIR, 'zotero.sqlite')
 const SNAPSHOT_DIR = resolve('.tmp-zotero')
 const METADATA_DB = resolve('data/papers/metadata.db')

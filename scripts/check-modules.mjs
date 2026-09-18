@@ -1,3 +1,4 @@
+import { resolveDshModules, resolveDshPackage } from './lib/dsh-root.mjs'
 /**
  * 模块清单的验收脚本（整合设计 v1.0 §9 第 2 步的判据）。
  *
@@ -14,7 +15,7 @@
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
 
-const DSH = 'C:/Users/Admin/AppData/Roaming/npm/node_modules/@deepseek-ai/dsh/node_modules/'
+const DSH = resolveDshModules()
 const require = createRequire(DSH + 'package.json')
 
 const { KbService } = await import(pathToFileURL('packages/dsh-plugin/lib/kb/service.js').href)

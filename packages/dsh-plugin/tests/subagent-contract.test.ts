@@ -37,7 +37,8 @@ const SRC = join(fileURLToPath(new URL('.', import.meta.url)), '..', 'src')
 const REPO_SRC_ROOT = join(SRC, '..')
 
 /** 已安装的 dsh 装载位置：与其它测试一样，从部署根解析。 */
-const DSH_ROOT = 'C:/Users/Admin/AppData/Roaming/npm/node_modules/@deepseek-ai/dsh'
+const { resolveDshPackage } = await import(new URL('../../../scripts/lib/dsh-root.mjs', import.meta.url).href)
+const DSH_ROOT = resolveDshPackage()
 const REAL_TYPES = join(
   DSH_ROOT,
   'node_modules/@deepseek-ai/dsh-subagent/lib/types/types.d.ts',

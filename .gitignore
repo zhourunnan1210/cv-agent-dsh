@@ -43,3 +43,12 @@ __pycache__/
 .idea/
 .DS_Store
 Thumbs.db
+
+# 临时/实验脚本：_ 前缀是约定，不进版本控制（脚本本体留在磁盘上）
+scripts/_*
+
+# 第三方 skill 中许可为 CC BY-NC 4.0 的部分（禁止商业使用，与 MIT 不兼容）
+# 见 NOTICE.md：开源发布前必须移除。能力不受影响，按需自行安装。
+.dsh/skills/academic-*/
+.dsh/skills/deep-research/
+.dsh/skills/shared/

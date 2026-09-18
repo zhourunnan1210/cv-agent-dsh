@@ -40,7 +40,8 @@ import { pathToFileURL } from 'node:url'
 
 import { SUBAGENT_MAX_DEPTH } from '../lib/subagent.js'
 
-const DSH = 'C:/Users/Admin/AppData/Roaming/npm/node_modules/@deepseek-ai/dsh/node_modules/'
+const { resolveDshModules } = await import(new URL('../../../scripts/lib/dsh-root.mjs', import.meta.url).href)
+const DSH = resolveDshModules()
 function loadDsh(spec) {
   const require = createRequire(DSH + spec + '/package.json')
   return import(pathToFileURL(require.resolve(spec)).href)

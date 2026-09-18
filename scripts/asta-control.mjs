@@ -1,3 +1,4 @@
+import { resolveDshModules, resolveDshPackage } from './lib/dsh-root.mjs'
 /**
  * P2-7 · Asta 从零检索控制组：验证「检索 → 入库 → 去重合并」通道端到端可用。
  *
@@ -64,7 +65,7 @@ const SNIPPET_LIMIT = Number(process.env.ASTA_SNIPPET_LIMIT ?? 100)
 const ENRICH_CHUNK = 50
 
 // ── 挂载 Asta MCP ──────────────────────────────────────────────────────────
-const DSH = 'C:/Users/Admin/AppData/Roaming/npm/node_modules/@deepseek-ai/dsh/node_modules/'
+const DSH = resolveDshModules()
 const loadPackage = (spec) => {
   const require = createRequire(DSH + spec + '/package.json')
   return import(pathToFileURL(require.resolve(spec)).href)

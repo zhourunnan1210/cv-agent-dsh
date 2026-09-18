@@ -1,3 +1,4 @@
+import { resolveDshModules, resolveDshPackage } from './lib/dsh-root.mjs'
 /**
  * P2-5b · Asta 元数据富化。
  *
@@ -64,7 +65,7 @@ if (!process.env.ASTA_API_KEY) {
 const LIMIT = Number(process.env.ASTA_ENRICH_LIMIT ?? 20)
 
 // ── 挂载 Asta MCP（与 tests/spike-asta-mcp.mjs 同款）───────────────────────
-const DSH = 'C:/Users/Admin/AppData/Roaming/npm/node_modules/@deepseek-ai/dsh/node_modules/'
+const DSH = resolveDshModules()
 const loadPackage = (spec) => {
   const require = createRequire(DSH + spec + '/package.json')
   return import(pathToFileURL(require.resolve(spec)).href)

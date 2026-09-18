@@ -1,3 +1,4 @@
+import { resolveDshModules, resolveDshPackage } from './lib/dsh-root.mjs'
 /** 一次性探查：打印 search_papers_by_relevance 一次调用的原始返回形状。 */
 import { readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
@@ -19,7 +20,7 @@ try {
   }
 } catch {}
 
-const DSH = 'C:/Users/Admin/AppData/Roaming/npm/node_modules/@deepseek-ai/dsh/node_modules/'
+const DSH = resolveDshModules()
 const loadPackage = (spec) => {
   const require = createRequire(DSH + spec + '/package.json')
   return import(pathToFileURL(require.resolve(spec)).href)

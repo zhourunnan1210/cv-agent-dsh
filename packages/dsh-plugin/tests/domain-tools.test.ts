@@ -23,7 +23,8 @@ import { DOMAIN_TOOLS } from '../lib/tools/names.js'
 /** 行模块源码目录（用于"默认值三处一致"这类静态守卫）。 */
 const SRC = join(fileURLToPath(new URL('.', import.meta.url)), '..', 'src')
 
-const DSH = 'C:/Users/Admin/AppData/Roaming/npm/node_modules/@deepseek-ai/dsh/node_modules/'
+const { resolveDshModules } = await import(new URL('../../../scripts/lib/dsh-root.mjs', import.meta.url).href)
+const DSH = resolveDshModules()
 function loadDsh(spec) {
   const require = createRequire(DSH + spec + '/package.json')
   return import(pathToFileURL(require.resolve(spec)).href)

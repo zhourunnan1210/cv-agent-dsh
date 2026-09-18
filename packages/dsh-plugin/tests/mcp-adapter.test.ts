@@ -19,7 +19,8 @@ import { lexicalSimilarity } from '@cv-research/core'
 import { createCoreKnowledgeBase, type KnowledgeBaseAdapter } from '../lib/mcp/kb-adapter.js'
 import { KbService } from '../lib/kb/service.js'
 
-const DSH = 'C:/Users/Admin/AppData/Roaming/npm/node_modules/@deepseek-ai/dsh/node_modules/'
+const { resolveDshModules } = await import(new URL('../../../scripts/lib/dsh-root.mjs', import.meta.url).href)
+const DSH = resolveDshModules()
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
 const require = createRequire(DSH + '@deepseek-ai/dsh-system-prompt/package.json')

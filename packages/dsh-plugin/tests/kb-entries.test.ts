@@ -15,7 +15,8 @@ import { KbService } from '../lib/kb/service.js'
 import * as entryTools from '../lib/kb/entry-tools.js'
 import { KB_TOOLS } from '../lib/tools/names.js'
 
-const DSH = 'C:/Users/Admin/AppData/Roaming/npm/node_modules/@deepseek-ai/dsh/node_modules/'
+const { resolveDshModules } = await import(new URL('../../../scripts/lib/dsh-root.mjs', import.meta.url).href)
+const DSH = resolveDshModules()
 function loadDsh(spec) {
   const require = createRequire(DSH + spec + '/package.json')
   return import(pathToFileURL(require.resolve(spec)).href)

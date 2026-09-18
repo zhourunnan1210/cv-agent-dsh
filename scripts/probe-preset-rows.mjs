@@ -1,3 +1,4 @@
+import { resolveDshModules, resolveDshPackage } from './lib/dsh-root.mjs'
 /**
  * 预设**行级挂载探针**（新进程，真 Cordis，真 loader 语义）。
  *
@@ -41,7 +42,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-const DSH_ROOT = 'C:/Users/Admin/AppData/Roaming/npm/node_modules/@deepseek-ai/dsh'
+const DSH_ROOT = resolveDshPackage()
 const require = createRequire(DSH_ROOT + '/package.json')
 
 const presetPath = resolve(process.argv[2] ?? 'packages/dsh-plugin/presets/cv-research/agent.cordis.yml')

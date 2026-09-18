@@ -1,3 +1,4 @@
+import { resolveDshModules, resolveDshPackage } from './lib/dsh-root.mjs'
 /**
  * 工具目录验收 —— 一个会话真正能看到的 cvagent / Asta 工具面。
  *
@@ -78,7 +79,7 @@ try {
 
 const withAsta = process.argv.includes('--with-asta')
 
-const DSH = 'C:/Users/Admin/AppData/Roaming/npm/node_modules/@deepseek-ai/dsh/node_modules/'
+const DSH = resolveDshModules()
 function loadDsh(spec) {
   const require = createRequire(DSH + spec + '/package.json')
   return import(pathToFileURL(require.resolve(spec)).href)

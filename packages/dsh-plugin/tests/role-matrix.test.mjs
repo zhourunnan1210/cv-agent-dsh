@@ -1,3 +1,4 @@
+import { resolveDshModules, resolveDshPackage } from '../../../scripts/lib/dsh-root.mjs'
 /**
  * 勘误 §4.2「修订版 §16.1 角色矩阵」的可执行规格。
  *
@@ -50,7 +51,7 @@ import {
   SCOUT_ALLOWED_TOOLS,
 } from '../lib/tools/names.js'
 
-const DSH = 'C:/Users/Admin/AppData/Roaming/npm/node_modules/@deepseek-ai/dsh/node_modules/'
+const DSH = resolveDshModules()
 
 function loadDsh(spec) {
   const require = createRequire(DSH + spec + '/package.json')

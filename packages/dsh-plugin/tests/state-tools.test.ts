@@ -25,7 +25,8 @@ import { ProjectStateService } from '../lib/state/service.js'
 import * as stateTools from '../lib/state/tools.js'
 import { statePaths } from '../lib/state/store.js'
 
-const DSH = 'C:/Users/Admin/AppData/Roaming/npm/node_modules/@deepseek-ai/dsh/node_modules/'
+const { resolveDshModules } = await import(new URL('../../../scripts/lib/dsh-root.mjs', import.meta.url).href)
+const DSH = resolveDshModules()
 
 function loadDsh(spec) {
   const require = createRequire(DSH + spec + '/package.json')

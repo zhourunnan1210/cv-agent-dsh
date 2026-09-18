@@ -1,8 +1,8 @@
 {
-  "name": "cv-research-agent",
+  "name": "cv-agent-dsh",
   "version": "0.0.0",
   "private": true,
-  "description": "CV 自主科研 Agent 平台 —— 平台无关核心（@cv-research/core）与 dsh 适配层（cv-agent-dsh）",
+  "description": "面向计算机视觉领域的自主科研 Agent 平台：论文库 / 撞车评估 / Idea 打分 / 实验与写作编排，以 DeepSeek Harness（dsh）为运行时底座",
   "license": "MIT",
   "type": "module",
   "engines": {
@@ -12,9 +12,29 @@
   "scripts": {
     "typecheck": "pnpm -r --if-present typecheck",
     "test": "pnpm -r --if-present test",
-    "build": "pnpm -r --if-present build"
+    "build": "pnpm -r --if-present build",
+    "verify": "pnpm typecheck && pnpm test"
   },
   "devDependencies": {
     "vitest": "^4.1.8"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/<your-org>/cv-agent-dsh.git"
+  },
+  "homepage": "https://github.com/<your-org>/cv-agent-dsh#readme",
+  "bugs": {
+    "url": "https://github.com/<your-org>/cv-agent-dsh/issues"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "cordis",
+    "ai-agent",
+    "research-agent",
+    "computer-vision",
+    "deepfake-detection",
+    "mcp",
+    "llm"
+  ]
 }

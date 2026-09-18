@@ -1,3 +1,4 @@
+import { resolveDshModules, resolveDshPackage } from './lib/dsh-root.mjs'
 /**
  * 一次性探查：get_paper_batch 能否返回 openAccessPdf / isOpenAccess（全文获取的路由依据）。
  * 注意：字段组合不被接受时 Asta 服务端**可能挂起**（P2-5 的 abstract 教训），故设 60s 超时并只取 3 个 ID。
@@ -22,7 +23,7 @@ try {
   }
 } catch {}
 
-const DSH = 'C:/Users/Admin/AppData/Roaming/npm/node_modules/@deepseek-ai/dsh/node_modules/'
+const DSH = resolveDshModules()
 const loadPackage = (spec) => {
   const require = createRequire(DSH + spec + '/package.json')
   return import(pathToFileURL(require.resolve(spec)).href)

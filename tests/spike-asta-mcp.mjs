@@ -1,3 +1,4 @@
+import { resolveDshModules, resolveDshPackage } from '../scripts/lib/dsh-root.mjs'
 /**
  * Phase 1 · S-asta spike —— Asta MCP 作为 dsh 工具行的 L1 实证。
  *
@@ -40,7 +41,7 @@ import { strict as assert } from 'node:assert'
 // 契约的权威来源是**构建产物**：运行时加载的是 lib/，不是 src/。
 import { ASTA_TOOL_NAMES } from '../packages/dsh-plugin/lib/tools/names.js'
 
-const DSH = 'C:/Users/Admin/AppData/Roaming/npm/node_modules/@deepseek-ai/dsh/node_modules/'
+const DSH = resolveDshModules()
 const ASTA_URL = 'https://asta-tools.allen.ai/mcp/v1'
 
 /**

@@ -1,3 +1,4 @@
+import { resolveDshModules, resolveDshPackage } from '../scripts/lib/dsh-root.mjs'
 /**
  * Phase 0 · S1 spike —— 工具白名单隔离的 L1 实证。
  *
@@ -35,7 +36,7 @@ import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
 import { strict as assert } from 'node:assert'
 
-const DSH = 'C:/Users/Admin/AppData/Roaming/npm/node_modules/@deepseek-ai/dsh/node_modules/'
+const DSH = resolveDshModules()
 
 function loadPackage(spec) {
   const require = createRequire(DSH + spec + '/package.json')
